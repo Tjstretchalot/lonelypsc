@@ -26,7 +26,7 @@ pip freeze > requirements.txt
 
 In order not to maintain any active connections, you must have a listen socket
 accepting incoming HTTP(s) requests. This is the main benefit of this library,
-however, for those occassions where a topic is highly active or for very
+however, for those occasions where a topic is highly active or for very
 temporary subscriptions, you can also use a websocket connection which will
 behave more like what you may be used to from e.g. Redis.
 
