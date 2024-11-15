@@ -1,2 +1,2 @@
-class PubSubClient:
+class HttpPubSubClient:
     def __init__(self): ...

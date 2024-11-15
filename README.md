@@ -38,14 +38,49 @@ This client exposes a FastAPI APIRouter that you can bind however you want and
 a default flow that uses uvicorn to run an ASGI app based on that router.
 
 ```python
-from httppubsubclient.client import PubSubClient
+from httppubsubclient.client import HttpPubSubClient
+from httppubsubclient.config import (
+    HttpPubSubConfig,
+    HttpPubSubBindUvicornConfig,
+    get_auth_config_from_file
+)
 import json
 
-async def main():
-    with open('httppubsubclient.json') as f:
-        httppubsubclient_config = json.load(f)
+def _build_config() -> HttpPubSubConfig:
+    # subscriber-secrets.json is produced from the --setup command on the
+    # server. generally, this configures HMAC signing authorization between the
+    # subscribers and broadcasters; if you are using HTTPS you can use token
+    # authorization instead, or if you have some other way to authorize the
+    # connections (e.g., TLS mutual auth), or you are sufficiently satisfied
+    # network communication is internal only, this can setup "none"
+    # authorization. no matter what, the broadcasters and subscribers will need
+    # to agree.
+    send_auth_config, receive_auth_config = get_auth_config_from_file(
+        'subscriber-secrets.json'
+    )
 
-    async with PubSubClient(**httppubsubclient_config) as client:
+    # if you want to use a websocket instead, use WebsocketPubSubConfig instead
+    # (and use the WebsocketPubSubClient class)
+
+    return HttpPubSubConfig(
+        # configures how uvicorn is going to bind the listen socket
+        # can also just use a plain dict as this is a TypedDict class
+        # If you want to receive the fastapi APIRouter and bind it yourself,
+        # you can do that via HttpPubSubBindManualConfig(type="manual", callback=lambda router: ...)
+        bind=HttpPubSubBindUvicornConfig(
+            type="uvicorn",
+            address='0.0.0.0',
+            port=3002
+        ),
+        # configures how the broadcaster is going to connect to us
+        host='http://192.0.2.0:3002',
+        send_auth=send_auth_config,
+        receive_auth=receive_auth_config
+    )
+
+
+async def main():
+    async with HttpPubSubClient(_build_config()) as client:
         print('Subscribing to foo/bar (exact match) until 1 message is received...')
         async with client.subscribe_exact(b'foo/bar') as subscription:
             async for message in subscription:
@@ -66,7 +101,10 @@ async def main():
                 print(f'Received message on {message.topic}: {message.data.read().decode('utf-8')}')
                 break
 
-        print('Subscribing to one exact topic until a message is received, with arbitrary timeout behavior...')
+        print(
+            'Subscribing to one exact topic until a message is received, '
+            'with arbitrary timeout behavior...'
+        )
         timeout_task = asyncio.create_task(asyncio.sleep(5))
         async with client.subscribe_exact(b'foo/bar') as subscription:
             sub_iter = await subscription.__aiter__()
