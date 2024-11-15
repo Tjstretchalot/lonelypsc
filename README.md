@@ -74,7 +74,9 @@ def _build_config() -> HttpPubSubConfig:
         ),
         # configures how the broadcaster is going to connect to us
         host='http://192.0.2.0:3002',
+        # determines how we set the authorization header when reaching out to the broadcaster
         send_auth=send_auth_config,
+        # determines how we validate the authorization header when receiving from the broadcaster
         receive_auth=receive_auth_config
     )
 
