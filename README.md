@@ -42,6 +42,7 @@ from httppubsubclient.client import HttpPubSubClient
 from httppubsubclient.config import (
     HttpPubSubConfig,
     HttpPubSubBindUvicornConfig,
+    HttpPubSubBroadcasterConfig,
     get_auth_config_from_file
 )
 import json
@@ -80,10 +81,42 @@ def _build_config() -> HttpPubSubConfig:
         # unique process id of 1, then you might use:
         # host="http://192.0.2.0:3002/pubsub#1"
         host='http://192.0.2.0:3002',
+        # the broadcasters that we will try to connect to. note that broadcasters
+        # are generally stateless, so there is no data loss if one goes down. hence,
+        # a high-availability setup typically needs only 2 broadcasters to tolerate
+        # 1 AZ failure.
+        broadcasters=[
+            HttpPubSubBroadcasterConfig(host="http://192.0.2.1:3003"),
+            HttpPubSubBroadcasterConfig(host="http://192.0.2.2:3003")
+        ],
         # determines how we set the authorization header when reaching out to the broadcaster
         send_auth=send_auth_config,
         # determines how we validate the authorization header when receiving from the broadcaster
-        receive_auth=receive_auth_config
+        receive_auth=receive_auth_config,
+        # if receiving a message thats larger than this in bytes, it will be spooled to disk
+        message_body_spool_size=1024 * 1024 * 10,
+        # total timeout for a request to a broadcaster in seconds
+        outgoing_http_timeout_total=30,
+        # total timeout for connecting to a broadcaster in seconds
+        outgoing_http_timeout_connect=None,
+        # timeout for a single socket read from a broadcaster in seconds
+        outgoing_http_timeout_sock_read=None,
+        # timeout for a single socket connect to a broadcaster in seconds
+        outgoing_http_timeout_sock_connect=5,
+        # if True (recommended), if there is a network error reaching a broadcaster,
+        # we will assume the broadcaster did NOT receive the message. if False
+        # (not recommended), we will assume the broadcaster DID receive the message.
+        # It's not possible to know either way (this is known as the
+        # Two Generals' problem), but under most conditions TCP network errors mean the
+        # message was not received, so only set this to False if dropped messages
+        # are preferred significantly over duplicate messages.
+        outgoing_retry_network_errors=True,
+        # how many attempts per broadcaster before giving up; if this is 2,
+        # for example, we will try every broadcaster once, then we will try
+        # them all one more time before giving up. will retry 502, 503, and 504
+        # responses by default, plus network errors if outgoing_retry_network_errors
+        # is True.
+        outgoing_retries_per_broadcaster=2,
     )
 
 
