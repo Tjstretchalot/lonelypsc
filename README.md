@@ -72,7 +72,13 @@ def _build_config() -> HttpPubSubConfig:
             address='0.0.0.0',
             port=3002
         ),
-        # configures how the broadcaster is going to connect to us
+        # configures how the broadcaster is going to connect to us. This can include
+        # a path, if you are prefixing our router with something, and it can include
+        # a fragment, which will be used on all subscribe urls.
+        # ex: you are serving the router's `/v1/receive` at `/pubsub/v1/receive`
+        # and you are hosting multiple processes on this machine, and this has the
+        # unique process id of 1, then you might use:
+        # host="http://192.0.2.0:3002/pubsub#1"
         host='http://192.0.2.0:3002',
         # determines how we set the authorization header when reaching out to the broadcaster
         send_auth=send_auth_config,
