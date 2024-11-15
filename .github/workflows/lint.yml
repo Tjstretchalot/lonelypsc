@@ -1,0 +1,30 @@
+name: CI
+
+on: [push]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python_version: [3.9, '3.10', '3.11', '3.12']
+    steps:
+      - name: Setup Python ${{ matrix.python_version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python_version }}
+      - name: Fetch httppubsubclient
+        uses: actions/checkout@v4
+      - name: Generic python setup
+        run: |
+          python -m pip install --upgrade pip
+      - name: Installing dependencies
+        run: |
+          python -m pip install -r requirements.txt
+      - name: Lint httppubsubclient with black
+        run: |
+          python -m black --check src/httppubsubclient
+      - name: Type check httppubsubclient with mypy
+        working-directory: src
+        run: |
+          mypy httppubsubclient --explicit-package-bases
