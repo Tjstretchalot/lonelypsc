@@ -71,7 +71,7 @@ async def main():
         async with client.subscribe_exact(b'foo/bar') as subscription:
             sub_iter = await subscription.__aiter__()
             message_task = asyncio.create_task(sub_iter.__anext__())
-            done, pending = await asyncio.wait({timeout_task, message_task}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait({timeout_task, message_task}, return_when=asyncio.FIRST_COMPLETED)
             if not message_task.cancel():
                 timeout_task.cancel()
                 message = message_task.result()
