@@ -39,12 +39,9 @@ a default flow that uses uvicorn to run an ASGI app based on that router.
 
 ```python
 from httppubsubclient.client import HttpPubSubClient
-from httppubsubclient.config import (
-    HttpPubSubConfig,
-    HttpPubSubBindUvicornConfig,
-    HttpPubSubBroadcasterConfig,
-    get_auth_config_from_file
-)
+from httppubsubclient.config import HttpPubSubConfig, make_http_pub_sub_config
+from httppubsubclient.config.auth_config import AuthConfigFromParts
+from httppubsubclient.config.file_config import get_auth_config_from_file
 import json
 
 def _build_config() -> HttpPubSubConfig:
@@ -56,23 +53,16 @@ def _build_config() -> HttpPubSubConfig:
     # network communication is internal only, this can setup "none"
     # authorization. no matter what, the broadcasters and subscribers will need
     # to agree.
-    send_auth_config, receive_auth_config = get_auth_config_from_file(
+    incoming_auth_config, outgoing_auth_config = get_auth_config_from_file(
         'subscriber-secrets.json'
     )
 
     # if you want to use a websocket instead, use WebsocketPubSubConfig instead
     # (and use the WebsocketPubSubClient class)
 
-    return HttpPubSubConfig(
+    return make_http_pub_sub_config(
         # configures how uvicorn is going to bind the listen socket
-        # can also just use a plain dict as this is a TypedDict class
-        # If you want to receive the fastapi APIRouter and bind it yourself,
-        # you can do that via HttpPubSubBindManualConfig(type="manual", callback=lambda router: ...)
-        bind=HttpPubSubBindUvicornConfig(
-            type="uvicorn",
-            address='0.0.0.0',
-            port=3002
-        ),
+        bind={"type": "uvicorn", "address": "0.0.0.0", "port": 3002},
         # configures how the broadcaster is going to connect to us. This can include
         # a path, if you are prefixing our router with something, and it can include
         # a fragment, which will be used on all subscribe urls.
@@ -86,13 +76,15 @@ def _build_config() -> HttpPubSubConfig:
         # a high-availability setup typically needs only 2 broadcasters to tolerate
         # 1 AZ failure.
         broadcasters=[
-            HttpPubSubBroadcasterConfig(host="http://192.0.2.1:3003"),
-            HttpPubSubBroadcasterConfig(host="http://192.0.2.2:3003")
+            {"host": "http://192.0.2.1:3003"},
+            {"host": "http://192.0.2.2:3003"}
         ],
-        # determines how we set the authorization header when reaching out to the broadcaster
-        send_auth=send_auth_config,
-        # determines how we validate the authorization header when receiving from the broadcaster
-        receive_auth=receive_auth_config,
+        # how many attempts per broadcaster before giving up; if this is 2,
+        # for example, we will try every broadcaster once, then we will try
+        # them all one more time before giving up. will retry 502, 503, and 504
+        # responses by default, plus network errors if outgoing_retry_network_errors
+        # is True.
+        outgoing_retries_per_broadcaster=2,
         # if receiving a message thats larger than this in bytes, it will be spooled to disk
         message_body_spool_size=1024 * 1024 * 10,
         # total timeout for a request to a broadcaster in seconds
@@ -103,20 +95,14 @@ def _build_config() -> HttpPubSubConfig:
         outgoing_http_timeout_sock_read=None,
         # timeout for a single socket connect to a broadcaster in seconds
         outgoing_http_timeout_sock_connect=5,
-        # if True (recommended), if there is a network error reaching a broadcaster,
-        # we will assume the broadcaster did NOT receive the message. if False
-        # (not recommended), we will assume the broadcaster DID receive the message.
-        # It's not possible to know either way (this is known as the
-        # Two Generals' problem), but under most conditions TCP network errors mean the
-        # message was not received, so only set this to False if dropped messages
-        # are preferred significantly over duplicate messages.
-        outgoing_retry_network_errors=True,
-        # how many attempts per broadcaster before giving up; if this is 2,
-        # for example, we will try every broadcaster once, then we will try
-        # them all one more time before giving up. will retry 502, 503, and 504
-        # responses by default, plus network errors if outgoing_retry_network_errors
-        # is True.
-        outgoing_retries_per_broadcaster=2,
+        # if we assume the broadcaster did not receive the message where ambiguous
+        outgoing_retry_ambiguous=True,
+        auth=AuthConfigFromParts(
+            # determines how we validate the authorization header when receiving from the broadcaster
+            incoming_auth_config,
+            # determines how we set the authorization header when reaching out to the broadcaster
+            outgoing_auth_config
+        ),
     )
 
 
