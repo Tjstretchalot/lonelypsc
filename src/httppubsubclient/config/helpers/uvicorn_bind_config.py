@@ -1,0 +1,34 @@
+from fastapi import FastAPI, APIRouter
+
+from httppubsubclient.config.config import (
+    HttpPubSubBindManualConfig,
+    HttpPubSubBindUvicornConfig,
+)
+import uvicorn
+
+
+class BindWithUvicornCallback:
+    """Fulfills the HttpPubSubBindManualCallback using uvicorn as the runner"""
+
+    def __init__(self, settings: HttpPubSubBindUvicornConfig):
+        self.settings = settings
+
+    async def __call__(self, router: APIRouter) -> None:
+        app = FastAPI()
+        app.include_router(router)
+        app.router.redirect_slashes = False
+        uv_config = uvicorn.Config(
+            app, host=self.settings["host"], port=self.settings["port"]
+        )
+        uv_server = uvicorn.Server(uv_config)
+        await uv_server.serve()
+
+
+async def handle_bind_with_uvicorn(
+    settings: HttpPubSubBindUvicornConfig,
+) -> HttpPubSubBindManualConfig:
+    """Converts the bind with uvicorn settings into the generic manual config"""
+    return {
+        "type": "manual",
+        "callback": BindWithUvicornCallback(settings),
+    }

@@ -19,12 +19,15 @@ class HttpPubSubBindUvicornConfig(TypedDict):
     This is provided as the most common option, but if you need to configure
     anything more specific (e.g., middleware for logging, etc), you should
     use `HttpPubSubBindManualConfig` instead.
+
+    Note - this is just converted into a manual config via the module
+    `httppubsubclient.config.helpers.uvicorn_bind_config`
     """
 
     type: Literal["uvicorn"]
     """discriminates the type"""
 
-    address: str
+    host: str
     """What address to bind to, e.g., 0.0.0.0 for all interfaces"""
 
     port: int
@@ -36,7 +39,13 @@ class HttpPubSubBindUvicornConfig(TypedDict):
 class HttpPubSubBindManualCallback(Protocol):
     """Describes the callback that binds the http server in manual mode"""
 
-    async def __call__(self, router: APIRouter) -> None: ...
+    async def __call__(self, router: APIRouter) -> None:
+        """Serves requests continuously with the given router, not returning
+        until the server is shutdown. We will cancel the task when the client
+        is being exitted. Should never return normally, as then there would be
+        no way to know when to shut down the server. The only exception is if
+        you are guarranteeing only one client in the lifetime of the application.
+        """
 
 
 class HttpPubSubBindManualConfig(TypedDict):
@@ -50,7 +59,7 @@ class HttpPubSubBindManualConfig(TypedDict):
     """discriminates the type"""
 
     callback: HttpPubSubBindManualCallback
-    """The callback that binds the http server"""
+    """The callback that binds the http server."""
 
 
 class HttpPubSubBroadcasterConfig(TypedDict):

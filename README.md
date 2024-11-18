@@ -59,7 +59,7 @@ def _build_config() -> HttpPubSubConfig:
 
     return make_http_pub_sub_config(
         # configures how uvicorn is going to bind the listen socket
-        bind={"type": "uvicorn", "address": "0.0.0.0", "port": 3002},
+        bind={"type": "uvicorn", "host": "0.0.0.0", "port": 3002},
         # configures how the broadcaster is going to connect to us. This can include
         # a path, if you are prefixing our router with something, and it can include
         # a fragment, which will be used on all subscribe urls.
@@ -105,6 +105,9 @@ def _build_config() -> HttpPubSubConfig:
 
 async def main():
     async with HttpPubSubClient(_build_config()) as client:
+        # entering/exiting the client involves setting up/tearing down a server socket, so
+        # you should generally only have 1 at a time and avoid unnecessarily recreating them
+
         print('Subscribing to foo/bar (exact match) until 1 message is received...')
         async with client.subscribe_exact(b'foo/bar') as subscription:
             async for message in subscription:
@@ -118,9 +121,15 @@ async def main():
                 break
 
         print('Subscribing to a variety of topics until one message is received...')
+        async with client.subscribe(exact=[b'foo/bar'], glob=['baz/*']) as subscription:
+            async for message in subscription:
+                print(f'Received message on {message.topic}: {message.data.read().decode('utf-8')}')
+                break
+
+        print('Subscribing to a variety of topics (alt syntax) until one message is received...')
         async with client.subscribe_multi() as subscription:
             await subscription.subscribe_exact(b'foo/bar')
-            await subscription.subscribe_glob('foo/*')
+            await subscription.subscribe_glob('baz/*')
             async for message in subscription:
                 print(f'Received message on {message.topic}: {message.data.read().decode('utf-8')}')
                 break
@@ -131,6 +140,8 @@ async def main():
         )
         timeout_task = asyncio.create_task(asyncio.sleep(5))
         async with client.subscribe_exact(b'foo/bar') as subscription:
+            # implementation note: will error if you try to call __aiter__ more than
+            # once on a subscription
             sub_iter = await subscription.__aiter__()
             message_task = asyncio.create_task(sub_iter.__anext__())
             await asyncio.wait({timeout_task, message_task}, return_when=asyncio.FIRST_COMPLETED)
@@ -160,3 +171,30 @@ async def main():
             result = await client.notify(topic=b'foo/baz', sync_file=f)
         print(f'Notified {result.notified} subscribers to foo/baz')
 ```
+
+## Duplicate messages
+
+With sane usage, i.e., no overlapping glob patterns within a client, duplicate
+messages are very unlikely. If using overlapping glob patterns (e.g.,
+subscribing to foo/\* and foo/baz), duplicate messages are expected and will
+behave unintuitively. Generally, you should:
+
+- be resilient to duplicated messages
+- avoid glob patterns that overlap with each other or with exact topics within
+  the same client
+
+In practice, exact subscriptions handle the vast majority of cases this library
+is suitable for, with glob patterns primarily being for analytics/logging/debugging
+on a separate client, so this is a relatively non-issue. Generally, just put the
+analytics/logging/debugging that attaches to a glob pattern (e.g., `**` for everything)
+on their own client (e.g via a websocket client).
+
+## TODO
+
+Things not designed yet but need to be handled:
+
+- should be a way to request the server unsubscribe us from everything when initializing
+  a client; requires either a listing endpoint from the server or a dedicated endpoint for
+  this purpose. this will make us naturally recover from errors much nicer
+- need to do something about concurrent subscribe/unsubscribe on client to the same topic,
+  at least error out (async lock?)
