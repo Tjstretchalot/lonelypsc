@@ -9,7 +9,6 @@ from typing import (
     Protocol,
     Union,
 )
-from dataclasses import dataclass
 
 from httppubsubclient.config.auth_config import AuthConfig
 
@@ -282,6 +281,18 @@ class HttpPubSubConfigFromParts:
             now=now,
             authorization=authorization,
         )
+
+    async def setup_incoming_auth(self) -> None:
+        await self.auth_config.setup_incoming_auth()
+
+    async def teardown_incoming_auth(self) -> None:
+        await self.auth_config.teardown_incoming_auth()
+
+    async def setup_outgoing_auth(self) -> None:
+        await self.auth_config.setup_outgoing_auth()
+
+    async def teardown_outgoing_auth(self) -> None:
+        await self.auth_config.teardown_outgoing_auth()
 
     async def setup_subscribe_exact_authorization(
         self, /, *, url: str, exact: bytes, now: float

@@ -9,7 +9,8 @@ class IncomingNoneAuth:
     (hmac is still effective without https)
     """
 
-    def __init__(self) -> None: ...
+    async def setup_incoming_auth(self) -> None: ...
+    async def teardown_incoming_auth(self) -> None: ...
 
     async def is_receive_allowed(
         self,
@@ -30,7 +31,8 @@ class OutgoingNoneAuth:
     (hmac is still effective without https)
     """
 
-    def __init__(self) -> None: ...
+    async def setup_outgoing_auth(self) -> None: ...
+    async def teardown_outgoing_auth(self) -> None: ...
 
     async def setup_subscribe_exact_authorization(
         self, /, *, url: str, exact: bytes, now: float

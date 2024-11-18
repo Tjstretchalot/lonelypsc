@@ -57,9 +57,6 @@ def _build_config() -> HttpPubSubConfig:
         'subscriber-secrets.json'
     )
 
-    # if you want to use a websocket instead, use WebsocketPubSubConfig instead
-    # (and use the WebsocketPubSubClient class)
-
     return make_http_pub_sub_config(
         # configures how uvicorn is going to bind the listen socket
         bind={"type": "uvicorn", "address": "0.0.0.0", "port": 3002},
