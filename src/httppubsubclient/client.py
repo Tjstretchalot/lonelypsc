@@ -474,7 +474,7 @@ class PubSubClient:
 
             await self.connector.subscribe_glob(glob=glob)
 
-        self.glob_subscriptions[glob] = requests_so_far + 1
+        self.glob_subscriptions[glob] = max(1, requests_so_far + 1)
         self.active_glob_subscriptions[my_id] = glob
         return "ok"
 
