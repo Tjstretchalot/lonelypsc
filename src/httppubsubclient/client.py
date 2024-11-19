@@ -1,4 +1,15 @@
-from typing import Dict, Iterable, List, Literal, Optional, Protocol, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    Optional,
+    Protocol,
+    Tuple,
+    Type,
+    Union,
+)
 from httppubsubclient.config.config import HttpPubSubConfig
 from httppubsubclient.types.sync_readable_bytes_io import SyncReadableBytesIO
 from dataclasses import dataclass
@@ -7,7 +18,7 @@ import re
 
 
 @dataclass
-class HttpPubSubClientMessage:
+class PubSubClientMessage:
     """A message received on a topic"""
 
     topic: bytes
@@ -18,38 +29,38 @@ class HttpPubSubClientMessage:
     """The message data"""
 
 
-class HttpPubSubClientSubscriptionIterator:
-    def __init__(self, parent: "HttpPubSubClientSubscription") -> None:
+class PubSubClientSubscriptionIterator:
+    def __init__(self, parent: "PubSubClientSubscription") -> None:
         self.parent = parent
 
-    async def __aiter__(self) -> "HttpPubSubClientSubscriptionIterator":
+    async def __aiter__(self) -> "PubSubClientSubscriptionIterator":
         return await self.parent.__aiter__()
 
-    async def __anext__(self) -> HttpPubSubClientMessage:
+    async def __anext__(self) -> PubSubClientMessage:
         """Explicitly expects cancellation"""
         raise NotImplementedError
 
 
-class HttpPubSubClientSubscriptionWithTimeoutIterator:
-    """Wrapper around HttpPubSubClientSubscriptionIterator that yields None if no message
+class PubSubClientSubscriptionWithTimeoutIterator:
+    """Wrapper around PubSubClientSubscriptionIterator that yields None if no message
     is received within the timeout (seconds). Note the timeout starts with `__anext__` is
     called, not when the last message was received.
     """
 
     def __init__(
         self,
-        parent: "HttpPubSubClientSubscription",
-        raw_iter: "HttpPubSubClientSubscriptionIterator",
+        parent: "PubSubClientSubscription",
+        raw_iter: "PubSubClientSubscriptionIterator",
         timeout: float,
     ) -> None:
         self.parent = parent
         self.raw_iter = raw_iter
         self.timeout = timeout
 
-    async def __aiter__(self) -> "HttpPubSubClientSubscriptionWithTimeoutIterator":
+    async def __aiter__(self) -> "PubSubClientSubscriptionWithTimeoutIterator":
         return await self.parent.with_timeout(self.timeout)
 
-    async def __anext__(self) -> Optional[HttpPubSubClientMessage]:
+    async def __anext__(self) -> Optional[PubSubClientMessage]:
         """Explicitly expects cancellation"""
         timeout_task = asyncio.create_task(asyncio.sleep(self.timeout))
         message_task = asyncio.create_task(self.raw_iter.__anext__())
@@ -70,20 +81,20 @@ class HttpPubSubClientSubscriptionWithTimeoutIterator:
         return None
 
 
-_STATE_NOT_ENTERED = 1
-_STATE_ENTERED_NOT_BUFFERING = 2
-_STATE_ENTERED_BUFFERING = 3
-_STATE_DISPOSED = 4
+_STATE_NOT_ENTERED: Literal[1] = 1
+_STATE_ENTERED_NOT_BUFFERING: Literal[2] = 2
+_STATE_ENTERED_BUFFERING: Literal[3] = 3
+_STATE_DISPOSED: Literal[4] = 4
 
 
 @dataclass
-class _HttpPubSubClientSubscriptionStateNotEntered:
+class _PubSubClientSubscriptionStateNotEntered:
     """State when the subscription has not yet been entered"""
 
     type: Literal[1]
     """Type discriminator (_STATE_NOT_ENTERED)"""
 
-    client: "HttpPubSubClient"
+    client: "PubSubClient"
     """The client we are connected to"""
 
     exact: List[bytes]
@@ -94,7 +105,7 @@ class _HttpPubSubClientSubscriptionStateNotEntered:
 
 
 @dataclass
-class _HttpPubSubClientSubscriptionStateEnteredNotBuffering:
+class _PubSubClientSubscriptionStateEnteredNotBuffering:
     """State when we have been entered but an iterator hasn't been created yet;
     we have subscribed to the topics but are not yet receiving/buffering messages
     """
@@ -102,7 +113,7 @@ class _HttpPubSubClientSubscriptionStateEnteredNotBuffering:
     type: Literal[2]
     """Type discriminator (_STATE_ENTERED_NOT_BUFFERING)"""
 
-    client: "HttpPubSubClient"
+    client: "PubSubClient"
     """The client we are connected to"""
 
     exact: List[Tuple[int, bytes]]
@@ -113,7 +124,7 @@ class _HttpPubSubClientSubscriptionStateEnteredNotBuffering:
 
 
 @dataclass
-class _HttpPubSubClientSubscriptionStateEnteredBuffering:
+class _PubSubClientSubscriptionStateEnteredBuffering:
     """State when we have been entered and an iterator has been created; we
     are subscribed and buffering messages
     """
@@ -121,7 +132,7 @@ class _HttpPubSubClientSubscriptionStateEnteredBuffering:
     type: Literal[3]
     """Type discriminator (_STATE_ENTERED_BUFFERING)"""
 
-    client: "HttpPubSubClient"
+    client: "PubSubClient"
     """The client we are connected to"""
 
     exact: Dict[bytes, int]
@@ -139,25 +150,25 @@ class _HttpPubSubClientSubscriptionStateEnteredBuffering:
     with glob_regexes.
     """
 
-    buffer: asyncio.Queue[HttpPubSubClientMessage]
+    buffer: asyncio.Queue[PubSubClientMessage]
     """the buffer that we push matching messages to such that they are read by anext"""
 
 
 @dataclass
-class _HttpPubSubClientSubscriptionStateDisposed:
+class _PubSubClientSubscriptionStateDisposed:
     type: Literal[4]
     """Type discriminator (_STATE_DISPOSED)"""
 
 
-_HttpPubSubClientSubscriptionState = Union[
-    _HttpPubSubClientSubscriptionStateNotEntered,
-    _HttpPubSubClientSubscriptionStateEnteredNotBuffering,
-    _HttpPubSubClientSubscriptionStateEnteredBuffering,
-    _HttpPubSubClientSubscriptionStateDisposed,
+_PubSubClientSubscriptionState = Union[
+    _PubSubClientSubscriptionStateNotEntered,
+    _PubSubClientSubscriptionStateEnteredNotBuffering,
+    _PubSubClientSubscriptionStateEnteredBuffering,
+    _PubSubClientSubscriptionStateDisposed,
 ]
 
 
-class HttpPubSubClientSubscription:
+class PubSubClientSubscription:
     """Describes a subscription to one or more topic/globs within a single
     client. When the client exits it will exit all subscriptions, but exiting
     a subscription does not exit the client.
@@ -239,11 +250,9 @@ class HttpPubSubClientSubscription:
     ```
     """
 
-    def __init__(self, client: "HttpPubSubClient") -> None:
-        self.state: _HttpPubSubClientSubscriptionState = (
-            _HttpPubSubClientSubscriptionStateNotEntered(
-                _STATE_NOT_ENTERED, client, [], []
-            )
+    def __init__(self, client: "PubSubClient") -> None:
+        self.state: _PubSubClientSubscriptionState = (
+            _PubSubClientSubscriptionStateNotEntered(_STATE_NOT_ENTERED, client, [], [])
         )
 
     async def subscribe_exact(self, topic: bytes) -> None:
@@ -253,28 +262,114 @@ class HttpPubSubClientSubscription:
     async def subscribe_glob(self, glob: str) -> None: ...
     async def unsubscribe_exact(self, topic: bytes) -> None: ...
     async def unsubscribe_glob(self, glob: str) -> None: ...
-    async def on_message(self, message: HttpPubSubClientMessage) -> None: ...
+    async def on_message(self, message: PubSubClientMessage) -> None: ...
 
-    async def __aenter__(self) -> "HttpPubSubClientSubscription":
+    async def __aenter__(self) -> "PubSubClientSubscription":
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> None: ...
 
-    async def __aiter__(self) -> HttpPubSubClientSubscriptionIterator:
-        return HttpPubSubClientSubscriptionIterator(self)
+    async def __aiter__(self) -> PubSubClientSubscriptionIterator:
+        return PubSubClientSubscriptionIterator(self)
 
     async def with_timeout(
         self, seconds: float
-    ) -> HttpPubSubClientSubscriptionWithTimeoutIterator:
-        return HttpPubSubClientSubscriptionWithTimeoutIterator(self, seconds)
+    ) -> PubSubClientSubscriptionWithTimeoutIterator:
+        return PubSubClientSubscriptionWithTimeoutIterator(
+            self, await self.__aiter__(), seconds
+        )
 
 
-class HttpPubSubDirectOnMessageReceiver(Protocol):
-    async def on_message(self, message: HttpPubSubClientMessage) -> None: ...
+class PubSubDirectOnMessageReceiver(Protocol):
+    async def on_message(self, message: PubSubClientMessage) -> None: ...
 
 
-class HttpPubSubClient:
-    def __init__(self, config: HttpPubSubConfig):
+class PubSubClientConnector(Protocol):
+    """Something capable of making subscribe/unsubscribe requests"""
+
+    async def setup_connector(self) -> None: ...
+    async def teardown_connector(self) -> None: ...
+    async def subscribe_exact(self, /, *, topic: bytes) -> None: ...
+    async def subscribe_glob(self, /, *, glob: str) -> None: ...
+    async def unsubscribe_exact(self, /, *, topic: bytes) -> None: ...
+    async def unsubscribe_glob(self, /, *, glob: str) -> None: ...
+
+
+class PubSubClientReceiver(Protocol):
+    """Something capable of registering additional callbacks when messages are received"""
+
+    async def setup_receiver(self) -> None: ...
+    async def teardown_receiver(self) -> None: ...
+    async def register_on_message(
+        self, /, *, receiver: PubSubDirectOnMessageReceiver
+    ) -> int: ...
+    async def unregister_on_message(self, /, *, registration_id: int) -> None: ...
+
+
+class HttpPubSubClientConnector:
+    def __init__(self, config: HttpPubSubConfig) -> None:
+        raise NotImplementedError
+
+    async def setup_connector(self) -> None:
+        raise NotImplementedError
+
+    async def teardown_connector(self) -> None:
+        raise NotImplementedError
+
+    async def subscribe_exact(self, /, *, topic: bytes) -> None:
+        raise NotImplementedError
+
+    async def subscribe_glob(self, /, *, glob: str) -> None:
+        raise NotImplementedError
+
+    async def unsubscribe_exact(self, /, *, topic: bytes) -> None:
+        raise NotImplementedError
+
+    async def unsubscribe_glob(self, /, *, glob: str) -> None:
+        raise NotImplementedError
+
+
+if TYPE_CHECKING:
+    _: Type[PubSubClientConnector] = HttpPubSubClientConnector
+
+
+class HttpPubSubClientReceiver:
+    def __init__(self, config: HttpPubSubConfig) -> None:
+        raise NotImplementedError
+
+    async def setup_receiver(self) -> None:
+        raise NotImplementedError
+
+    async def teardown_receiver(self) -> None:
+        raise NotImplementedError
+
+    async def register_on_message(
+        self, /, *, receiver: PubSubDirectOnMessageReceiver
+    ) -> int:
+        raise NotImplementedError
+
+    async def unregister_on_message(self, /, *, registration_id: int) -> None:
+        raise NotImplementedError
+
+
+if TYPE_CHECKING:
+    __: Type[PubSubClientReceiver] = HttpPubSubClientReceiver
+
+
+class PubSubClient:
+    def __init__(
+        self, connector: PubSubClientConnector, receiver: PubSubClientReceiver
+    ) -> None:
+        self.connector: PubSubClientConnector = connector
+        """The connector that can make subscribe/unsubscribe requests. We assume that we
+        need to setup this when we are entered and teardown when we are exited.
+        """
+
+        self.receiver: PubSubClientReceiver = receiver
+        """The receiver that can register additional callbacks when messages are received.
+        We assume that we need to setup this when we are entered and teardown when we are exited.
+        """
+
         self.exact_subscriptions: Dict[bytes, int] = {}
         """Maps from topic we've subscribed to to the number of requests to subscribe to it"""
 
@@ -287,19 +382,151 @@ class HttpPubSubClient:
         self.active_glob_subscriptions: Dict[int, str] = {}
         """Maps from subscription_id to the corresponding glob"""
 
+        self._entered: bool = False
+        """True if we are active (aenter without aexit), False otherwise"""
+
         self._counter: int = 0
         """The counter for generating unique subscription ids"""
 
-    async def __aenter__(self) -> "HttpPubSubClient": ...
-    async def __aexit__(self, exc_type, exc_value, traceback) -> None: ...
+        self._subscribing_lock: asyncio.Lock = asyncio.Lock()
+        """A lock while actively subscribing/unsubscribing; managed by the direct_*
+        methods
+        """
 
-    async def _do_subscribe_exact(self, /, *, topic: bytes) -> None: ...
+    async def __aenter__(self) -> "PubSubClient":
+        assert not self._entered, "already entered (not re-entrant)"
+        await self.connector.setup_connector()
+        self._entered = True
+        try:
+            await self.receiver.setup_receiver()
+        except BaseException:
+            try:
+                await self.connector.teardown_connector()
+            finally:
+                self._entered = False
+        return self
 
-    async def _do_subscribe_glob(self, /, *, glob: str) -> None: ...
+    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+        assert self._entered, "not entered"
 
-    async def _do_unsubscribe_exact(self, /, *, subscription_id: int) -> None: ...
+        self._entered = False
+        excs: List[BaseException] = []
 
-    async def _do_unsubscribe_glob(self, /, *, subscription_id: int) -> None: ...
+        try:
+            await self.receiver.teardown_receiver()
+        except BaseException as e:
+            excs.append(e)
+
+        async with self._subscribing_lock:
+            for topic in self.exact_subscriptions.keys():
+                try:
+                    await self.connector.unsubscribe_exact(topic=topic)
+                except BaseException as e:
+                    excs.append(e)
+            for glob in self.glob_subscriptions.keys():
+                try:
+                    await self.connector.unsubscribe_glob(glob=glob)
+                except BaseException as e:
+                    excs.append(e)
+
+            self.exact_subscriptions = {}
+            self.active_exact_subscriptions = {}
+            self.glob_subscriptions = {}
+            self.active_glob_subscriptions = {}
+
+        try:
+            await self.connector.teardown_connector()
+        except BaseException as e:
+            excs.append(e)
+
+        if excs:
+            raise excs[0]
+
+    def _reserve_subscription_id(self) -> int:
+        """An asyncio-safe (since it doesn't yield) way to reserve a subscription
+        id. Not thread-safe
+        """
+        result = self._counter
+        self._counter += 1
+        return result
+
+    async def _try_direct_subscribe_exact(
+        self, /, *, topic: bytes, my_id: int, have_lock: bool
+    ) -> Literal["ok", "need_lock"]:
+        requests_so_far = self.exact_subscriptions.get(topic, 0)
+        if requests_so_far <= 0:
+            if not have_lock:
+                return "need_lock"
+
+            await self.connector.subscribe_exact(topic=topic)
+
+        self.exact_subscriptions[topic] = max(1, requests_so_far + 1)
+        self.active_exact_subscriptions[my_id] = topic
+        return "ok"
+
+    async def _try_direct_subscribe_glob(
+        self, /, *, glob: str, my_id: int, have_lock: bool
+    ) -> Literal["ok", "need_lock"]:
+        requests_so_far = self.glob_subscriptions.get(glob, 0)
+        if requests_so_far == 0:
+            if not have_lock:
+                return "need_lock"
+
+            await self.connector.subscribe_glob(glob=glob)
+
+        self.glob_subscriptions[glob] = requests_so_far + 1
+        self.active_glob_subscriptions[my_id] = glob
+        return "ok"
+
+    async def _try_direct_unsubscribe_exact(
+        self, /, *, subscription_id: int, have_lock: bool
+    ) -> Literal["ok", "need_lock"]:
+        topic = self.active_exact_subscriptions.get(subscription_id)
+        if topic is None:
+            return "ok"
+
+        requests_so_far = self.exact_subscriptions[topic]
+        need_unsubscribe = requests_so_far <= 1
+        if need_unsubscribe and not have_lock:
+            return "need_lock"
+
+        # If we're unsubscribing we'll set the value in exact_subscriptions to 0
+        # temporarily, then remove it if we're successful. The only effect of this
+        # is that we might want to use this information when we aexit
+        del self.active_exact_subscriptions[subscription_id]
+        self.exact_subscriptions[topic] = requests_so_far - 1
+
+        if need_unsubscribe:
+            await self.connector.unsubscribe_exact(topic=topic)
+            # we hold the lock so it shouldn't have changed, but we can recheck anyway
+            requests_so_far = self.exact_subscriptions[topic]
+            if requests_so_far <= 0:
+                del self.exact_subscriptions[topic]
+
+        return "ok"
+
+    async def _try_direct_unsubscribe_glob(
+        self, /, *, subscription_id: int, have_lock: bool
+    ) -> Literal["ok", "need_lock"]:
+        glob = self.active_glob_subscriptions.get(subscription_id)
+        if glob is None:
+            return "ok"
+
+        requests_so_far = self.glob_subscriptions[glob]
+        need_unsubscribe = requests_so_far <= 1
+        if need_unsubscribe and not have_lock:
+            return "need_lock"
+
+        del self.active_glob_subscriptions[subscription_id]
+        self.glob_subscriptions[glob] = requests_so_far - 1
+
+        if need_unsubscribe:
+            await self.connector.unsubscribe_glob(glob=glob)
+            requests_so_far = self.glob_subscriptions[glob]
+            if requests_so_far <= 0:
+                del self.glob_subscriptions[glob]
+
+        return "ok"
 
     async def direct_subscribe_exact(self, /, *, topic: bytes) -> int:
         """If we are not already subscribed to the given topic, subscribe to it.
@@ -321,26 +548,17 @@ class HttpPubSubClient:
         WARN:
             on error it may be ambiguous if we are subscribed or not
         """
-        # TODO: concurrency
-        my_id = self._counter
-        self._counter += 1
-        requests_so_far = self.exact_subscriptions.get(topic, 0)
-        self.exact_subscriptions[topic] = requests_so_far + 1
-        self.active_exact_subscriptions[my_id] = topic
-        if requests_so_far == 0:
-            # TODO: at this point an unsubscribe request should be blocked until we finish
-            # subscribing
-            try:
-                await self._do_subscribe_exact(topic=topic)
-            except:
-                del self.exact_subscriptions[topic]
-                requests_so_far = self.exact_subscriptions[topic]
-                if requests_so_far == 0:
-                    del self.exact_subscriptions[topic]
-                else:
-                    self.exact_subscriptions[topic] = requests_so_far - 1
-                raise
-
+        assert self._entered, "not entered"
+        my_id = self._reserve_subscription_id()
+        result = await self._try_direct_subscribe_exact(
+            topic=topic, my_id=my_id, have_lock=False
+        )
+        if result == "need_lock":
+            async with self._subscribing_lock:
+                result = await self._try_direct_subscribe_exact(
+                    topic=topic, my_id=my_id, have_lock=True
+                )
+        assert result == "ok"
         return my_id
 
     async def direct_subscribe_glob(self, /, *, glob: str) -> int:
@@ -369,26 +587,17 @@ class HttpPubSubClient:
             around, and duplication from network errors needs to be handled
             anyway so should not cause logic errors
         """
-        # TODO: concurrency
-        my_id = self._counter
-        self._counter += 1
-        requests_so_far = self.glob_subscriptions.get(glob, 0)
-        self.glob_subscriptions[glob] = requests_so_far + 1
-        self.active_glob_subscriptions[my_id] = glob
-        if requests_so_far == 0:
-            # TODO: at this point an unsubscribe request should be blocked until we finish
-            # subscribing
-            try:
-                await self._do_subscribe_glob(glob=glob)
-            except:
-                del self.glob_subscriptions[glob]
-                requests_so_far = self.glob_subscriptions[glob]
-                if requests_so_far == 0:
-                    del self.glob_subscriptions[glob]
-                else:
-                    self.glob_subscriptions[glob] = requests_so_far - 1
-                raise
-
+        assert self._entered, "not entered"
+        my_id = self._reserve_subscription_id()
+        result = await self._try_direct_subscribe_glob(
+            glob=glob, my_id=my_id, have_lock=False
+        )
+        if result == "need_lock":
+            async with self._subscribing_lock:
+                result = await self._try_direct_subscribe_glob(
+                    glob=glob, my_id=my_id, have_lock=True
+                )
+        assert result == "ok"
         return my_id
 
     async def direct_unsubscribe_exact(self, /, *, subscription_id: int) -> None:
@@ -406,20 +615,16 @@ class HttpPubSubClient:
             unsubscribing via an async context manager. otherwise, cleanup is
             both tedious and error-prone
         """
-        # TODO: concurrency
-        topic = self.active_exact_subscriptions.get(subscription_id)
-        if topic is None:
-            return
-
-        del self.active_exact_subscriptions[subscription_id]
-        requests_so_far = self.exact_subscriptions[topic]
-        if requests_so_far == 1:
-            del self.exact_subscriptions[topic]
-            # TODO:at this point a subscribe request should be blocked until we finish
-            # unsubscribing
-            await self._do_unsubscribe_exact(subscription_id=subscription_id)
-        else:
-            self.exact_subscriptions[topic] = requests_so_far - 1
+        assert self._entered, "not entered"
+        result = await self._try_direct_unsubscribe_exact(
+            subscription_id=subscription_id, have_lock=False
+        )
+        if result == "need_lock":
+            async with self._subscribing_lock:
+                result = await self._try_direct_unsubscribe_exact(
+                    subscription_id=subscription_id, have_lock=True
+                )
+        assert result == "ok"
 
     async def direct_unsubscribe_glob(self, /, *, subscription_id: int) -> None:
         """If the subscription id was returned from `direct_subscribe_glob`, and
@@ -436,30 +641,53 @@ class HttpPubSubClient:
             unsubscribing via an async context manager. otherwise, cleanup is
             both tedious and error-prone
         """
-        # TODO: concurrency
-        glob = self.active_glob_subscriptions.get(subscription_id)
-        if glob is None:
-            return
-
-        del self.active_glob_subscriptions[subscription_id]
-        requests_so_far = self.glob_subscriptions[glob]
-        if requests_so_far == 1:
-            del self.glob_subscriptions[glob]
-            # TODO: at this point a subscribe request should be blocked until we finish
-            # unsubscribing
-            await self._do_unsubscribe_glob(subscription_id=subscription_id)
-        else:
-            self.glob_subscriptions[glob] = requests_so_far - 1
+        assert self._entered, "not entered"
+        result = await self._try_direct_unsubscribe_glob(
+            subscription_id=subscription_id, have_lock=False
+        )
+        if result == "need_lock":
+            async with self._subscribing_lock:
+                result = await self._try_direct_unsubscribe_glob(
+                    subscription_id=subscription_id, have_lock=True
+                )
+        assert result == "ok"
 
     async def direct_register_on_message(
-        self, /, *, receiver: HttpPubSubDirectOnMessageReceiver
-    ) -> int: ...
+        self, /, *, receiver: PubSubDirectOnMessageReceiver
+    ) -> int:
+        """Registers the given callback to be invoked whenever we receive a message
+        for any topic. Returns a registration id that must be provided to
+        `direct_unregister_on_message` when the caller is no longer interested in
+        the messages.
 
-    async def direct_unregister_on_message(
-        self, /, *, registration_id: int
-    ) -> None: ...
+        WARN:
+            prefer using the `subscribe*` methods instead, which will handle
+            unsubscribing via an async context manager. otherwise, cleanup is
+            both tedious and error-prone
+        """
+        assert self._entered, "not entered"
+        return await self.receiver.register_on_message(receiver=receiver)
 
-    async def subscribe_multi() -> HttpPubSubClientSubscription:
+    async def direct_unregister_on_message(self, /, *, registration_id: int) -> None:
+        """If the registration id was returned from `direct_register_on_message`, and
+        it has not already been unregistered via this method, then unregister the
+        callback. If the registration id is not as indicated, the behavior is undefined:
+        - it may do nothing
+        - it may raise an error
+        - it may unregister an unrelated callback
+        - it may corrupt the state of the client
+
+        WARN:
+            prefer using the `subscribe*` methods instead, which will handle
+            unsubscribing via an async context manager. otherwise, cleanup is
+            both tedious and error-prone
+        """
+        assert self._entered, "not entered"
+        return await self.receiver.unregister_on_message(
+            registration_id=registration_id
+        )
+
+    async def subscribe_multi(self) -> PubSubClientSubscription:
         """Returns a new async context manager within which you can
         register multiple subscriptions (exact or glob). When exiting,
         the subscriptions will be removed.
@@ -470,11 +698,12 @@ class HttpPubSubClient:
         All the other `subscribe_*` methods just delegate to this plus
         a little setup
         """
+        assert self._entered, "not entered"
         raise NotImplementedError
 
     async def subscribe_exact(
         self, topic: bytes, *rest: bytes
-    ) -> HttpPubSubClientSubscription:
+    ) -> PubSubClientSubscription:
         """Subscribe to one or more topics by exact match. The result is an
         async context manager which, when exited, will unsubscribe from the
         topic(s)
@@ -482,15 +711,14 @@ class HttpPubSubClient:
         Re-entrant subscriptions are supported and avoid duplicate subscribe/
         unsubscribe requests to the broadcaster
         """
+        assert self._entered, "not entered"
         result = await self.subscribe_multi()
         await result.subscribe_exact(topic)
         for t in rest:
             await result.subscribe_exact(t)
         return result
 
-    async def subscribe_glob(
-        self, glob: str, *rest: str
-    ) -> HttpPubSubClientSubscription:
+    async def subscribe_glob(self, glob: str, *rest: str) -> PubSubClientSubscription:
         """Subscribe to one or more topics by glob match. The result is an
         async context manager which, when exited, will unsubscribe from the
         topic(s)
@@ -498,6 +726,7 @@ class HttpPubSubClient:
         Re-entrant subscriptions are supported and avoid duplicate subscribe/
         unsubscribe requests to the broadcaster
         """
+        assert self._entered, "not entered"
         result = await self.subscribe_multi()
         await result.subscribe_glob(glob)
         for t in rest:
@@ -518,11 +747,18 @@ class HttpPubSubClient:
         Re-entrant subscriptions are supported and avoid duplicate subscribe/
         unsubscribe requests to the broadcaster
         """
+        assert self._entered, "not entered"
         result = await self.subscribe_multi()
         if glob:
-            for t in glob:
-                await result.subscribe_glob(t)
+            for gb in glob:
+                await result.subscribe_glob(gb)
         if exact:
-            for t in exact:
-                await result.subscribe_exact(t)
+            for ex in exact:
+                await result.subscribe_exact(ex)
         return result
+
+
+def HttpPubSubClient(config: HttpPubSubConfig) -> PubSubClient:
+    return PubSubClient(
+        HttpPubSubClientConnector(config), HttpPubSubClientReceiver(config)
+    )

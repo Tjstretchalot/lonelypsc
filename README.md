@@ -196,5 +196,3 @@ Things not designed yet but need to be handled:
 - should be a way to request the server unsubscribe us from everything when initializing
   a client; requires either a listing endpoint from the server or a dedicated endpoint for
   this purpose. this will make us naturally recover from errors much nicer
-- need to do something about concurrent subscribe/unsubscribe on client to the same topic,
-  at least error out (async lock?)
