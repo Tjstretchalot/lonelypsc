@@ -6,7 +6,7 @@ from typing import (
     Literal,
     Optional,
     Protocol,
-    Tuple,
+    Set,
     Type,
     Union,
 )
@@ -15,6 +15,15 @@ from httppubsubclient.types.sync_readable_bytes_io import SyncReadableBytesIO
 from dataclasses import dataclass
 import asyncio
 import re
+
+try:
+    from glob import translate as _glob_translate  # type: ignore
+
+    def translate(pat: str) -> str:
+        return _glob_translate(pat, recursive=True, include_hidden=True)
+
+except ImportError:
+    from fnmatch import translate
 
 
 @dataclass
@@ -30,15 +39,15 @@ class PubSubClientMessage:
 
 
 class PubSubClientSubscriptionIterator:
-    def __init__(self, parent: "PubSubClientSubscription") -> None:
-        self.parent = parent
+    def __init__(self, buffer: asyncio.Queue[PubSubClientMessage]) -> None:
+        self.buffer = buffer
 
     async def __aiter__(self) -> "PubSubClientSubscriptionIterator":
-        return await self.parent.__aiter__()
+        raise NotImplementedError("only one iterator can be created")
 
     async def __anext__(self) -> PubSubClientMessage:
         """Explicitly expects cancellation"""
-        raise NotImplementedError
+        return await self.buffer.get()
 
 
 class PubSubClientSubscriptionWithTimeoutIterator:
@@ -49,16 +58,14 @@ class PubSubClientSubscriptionWithTimeoutIterator:
 
     def __init__(
         self,
-        parent: "PubSubClientSubscription",
         raw_iter: "PubSubClientSubscriptionIterator",
         timeout: float,
     ) -> None:
-        self.parent = parent
         self.raw_iter = raw_iter
         self.timeout = timeout
 
     async def __aiter__(self) -> "PubSubClientSubscriptionWithTimeoutIterator":
-        return await self.parent.with_timeout(self.timeout)
+        raise NotImplementedError("only one iterator can be created")
 
     async def __anext__(self) -> Optional[PubSubClientMessage]:
         """Explicitly expects cancellation"""
@@ -97,10 +104,10 @@ class _PubSubClientSubscriptionStateNotEntered:
     client: "PubSubClient"
     """The client we are connected to"""
 
-    exact: List[bytes]
+    exact: Set[bytes]
     """The exact topics that have been queued up to subscribe to when entered"""
 
-    glob: List[str]
+    glob: Set[str]
     """The glob topics that have been queued up to subscribe to when entered"""
 
 
@@ -116,11 +123,11 @@ class _PubSubClientSubscriptionStateEnteredNotBuffering:
     client: "PubSubClient"
     """The client we are connected to"""
 
-    exact: List[Tuple[int, bytes]]
-    """The (subscription_id, topic) pairs we are subscribed to"""
+    exact: Dict[bytes, int]
+    """The topic -> subscription id pairs we are subscribed to"""
 
-    glob: List[Tuple[int, str]]
-    """The (subscription_id, glob) pairs we are subscribed to"""
+    glob: Dict[str, int]
+    """The glob -> subscription id pairs we are subscribed to"""
 
 
 @dataclass
@@ -135,20 +142,24 @@ class _PubSubClientSubscriptionStateEnteredBuffering:
     client: "PubSubClient"
     """The client we are connected to"""
 
+    on_message_subscription_id: int
+    """The registration id for the on_message callback"""
+
     exact: Dict[bytes, int]
     """The topic -> subscription_id mapping for exact subscriptions. We care
     about a message because its an exact match if its a key in this dict.
     """
 
     glob_regexes: List[re.Pattern]
-    """The list of regexes we are subscribed to, in the exact order of glob_list. We
+    """The list of regexes we are subscribed to, in the exact order of `glob_list`. We
     care about a message because its a glob match if any of these regexes match.
     """
 
-    glob: List[Tuple[int, str]]
-    """The (subscription_id, glob) pairs we are subscribed to, with index correspondance
-    with glob_regexes.
-    """
+    glob_list: List[str]
+    """The globs that made the regexes in glob_regexes"""
+
+    glob: Dict[str, int]
+    """The glob -> subscription id pairs we are subscribed to"""
 
     buffer: asyncio.Queue[PubSubClientMessage]
     """the buffer that we push matching messages to such that they are read by anext"""
@@ -252,31 +263,244 @@ class PubSubClientSubscription:
 
     def __init__(self, client: "PubSubClient") -> None:
         self.state: _PubSubClientSubscriptionState = (
-            _PubSubClientSubscriptionStateNotEntered(_STATE_NOT_ENTERED, client, [], [])
+            _PubSubClientSubscriptionStateNotEntered(
+                _STATE_NOT_ENTERED, client, set(), set()
+            )
         )
-
-    async def subscribe_exact(self, topic: bytes) -> None:
-        if self.state.type == _STATE_NOT_ENTERED:
-            ...
-
-    async def subscribe_glob(self, glob: str) -> None: ...
-    async def unsubscribe_exact(self, topic: bytes) -> None: ...
-    async def unsubscribe_glob(self, glob: str) -> None: ...
-    async def on_message(self, message: PubSubClientMessage) -> None: ...
+        self._state_lock: asyncio.Lock = asyncio.Lock()
+        """Protects changing self.state"""
 
     async def __aenter__(self) -> "PubSubClientSubscription":
+        async with self._state_lock:
+            state = self.state
+            assert state.type == _STATE_NOT_ENTERED, "already entered"
+            exact: Dict[bytes, int] = dict()
+            glob: Dict[str, int] = dict()
+            try:
+                for topic in state.exact:
+                    exact[topic] = await state.client.direct_subscribe_exact(
+                        topic=topic
+                    )
+                for gb in state.glob:
+                    glob[gb] = await state.client.direct_subscribe_glob(glob=gb)
+            except BaseException:
+                for sub_id in exact.values():
+                    try:
+                        await state.client.direct_unsubscribe_exact(
+                            subscription_id=sub_id
+                        )
+                    except BaseException:
+                        ...
+                for sub_id in glob.values():
+                    try:
+                        await state.client.direct_unsubscribe_glob(
+                            subscription_id=sub_id
+                        )
+                    except BaseException:
+                        ...
+                raise
+
+            self.state = _PubSubClientSubscriptionStateEnteredNotBuffering(
+                type=_STATE_ENTERED_NOT_BUFFERING,
+                client=state.client,
+                exact=exact,
+                glob=glob,
+            )
+
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback) -> None: ...
+    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+        async with self._state_lock:
+            state = self.state
+            if (
+                state.type != _STATE_ENTERED_NOT_BUFFERING
+                and state.type != _STATE_ENTERED_BUFFERING
+            ):
+                return
+
+            exc: Optional[BaseException] = None
+
+            if state.type == _STATE_ENTERED_BUFFERING:
+                try:
+                    await state.client.direct_unregister_on_message(
+                        registration_id=state.on_message_subscription_id
+                    )
+                except BaseException as e:
+                    if exc is None:
+                        exc = e
+
+            for sub_id in state.exact.values():
+                try:
+                    await state.client.direct_unsubscribe_exact(subscription_id=sub_id)
+                except BaseException as e:
+                    if exc is None:
+                        exc = e
+
+            for sub_id in state.glob.values():
+                try:
+                    await state.client.direct_unsubscribe_glob(subscription_id=sub_id)
+                except BaseException as e:
+                    if exc is None:
+                        exc = e
+
+            self.state = _PubSubClientSubscriptionStateDisposed(_STATE_DISPOSED)
+            if exc is not None:
+                raise exc
+
+    async def subscribe_exact(self, topic: bytes) -> None:
+        async with self._state_lock:
+            state = self.state
+            if state.type == _STATE_NOT_ENTERED:
+                state.exact.add(topic)
+                return
+
+            if state.type == _STATE_DISPOSED:
+                raise RuntimeError("subscription has been disposed")
+
+            if topic in state.exact:
+                return
+
+            sub_id = await state.client.direct_subscribe_exact(topic=topic)
+            state.exact[topic] = sub_id
+
+    async def subscribe_glob(self, glob: str) -> None:
+        async with self._state_lock:
+            state = self.state
+            if state.type == _STATE_NOT_ENTERED:
+                state.glob.add(glob)
+                return
+
+            if state.type == _STATE_DISPOSED:
+                raise RuntimeError("subscription has been disposed")
+
+            if glob in state.glob:
+                return
+
+            glob_regex = (
+                None
+                if state.type != _STATE_ENTERED_BUFFERING
+                else re.compile(translate(glob))
+            )
+
+            sub_id = await state.client.direct_subscribe_glob(glob=glob)
+            state.glob[glob] = sub_id
+
+            if state.type == _STATE_ENTERED_BUFFERING:
+                assert glob_regex is not None
+                state.glob_list.append(glob)
+                state.glob_regexes.append(glob_regex)
+
+    async def unsubscribe_exact(self, topic: bytes) -> None:
+        """Unsubscribes from the given exact topic subscription. This is included
+        for completeness, but is not necessarily particularly fast.
+
+        Raises ValueError if not subscribed to the given topic, RuntimeError if already
+        disposed
+        """
+        async with self._state_lock:
+            state = self.state
+            if state.type == _STATE_NOT_ENTERED:
+                try:
+                    state.exact.remove(topic)
+                except KeyError:
+                    raise ValueError(f"not subscribed to {topic!r}")
+                return
+
+            if state.type == _STATE_DISPOSED:
+                raise RuntimeError("subscription has been disposed")
+
+            try:
+                sub_id = state.exact.pop(topic)
+            except KeyError:
+                raise ValueError(f"not subscribed to {topic!r}")
+
+            await state.client.direct_unsubscribe_exact(subscription_id=sub_id)
+
+    async def unsubscribe_glob(self, glob: str) -> None:
+        """Unsubscribes from the given glob subscription. This is included
+        for completeness, but is not necessarily particularly fast.
+
+        Raises ValueError if not subscribed to the given glob, RuntimeError if already
+        disposed
+        """
+        async with self._state_lock:
+            state = self.state
+            if state.type == _STATE_NOT_ENTERED:
+                try:
+                    state.glob.remove(glob)
+                except KeyError:
+                    raise ValueError(f"not subscribed to {glob!r}")
+                return
+
+            if state.type == _STATE_DISPOSED:
+                raise RuntimeError("subscription has been disposed")
+
+            try:
+                sub_id = state.glob.pop(glob)
+            except KeyError:
+                raise ValueError(f"not subscribed to {glob!r}")
+
+            exc: Optional[BaseException] = None
+            if state.type == _STATE_ENTERED_BUFFERING:
+                try:
+                    idx = state.glob_list.index(glob)
+                    state.glob_list.pop(idx)
+                    state.glob_regexes.pop(idx)
+                except (IndexError, ValueError) as e:
+                    exc = e
+
+            await state.client.direct_unsubscribe_glob(subscription_id=sub_id)
+
+            if exc is not None:
+                raise exc
+
+    async def on_message(self, message: PubSubClientMessage) -> None:
+        # can avoid a lock by using put_nowait, and raising instead of blocking is
+        # preferred in the unlikely event that the queue has a max size AND we reach it
+        state = self.state
+        if state.type != _STATE_ENTERED_BUFFERING:
+            return
+        state.buffer.put_nowait(message)
 
     async def __aiter__(self) -> PubSubClientSubscriptionIterator:
-        return PubSubClientSubscriptionIterator(self)
+        async with self._state_lock:
+            state = self.state
+            if state.type == _STATE_NOT_ENTERED:
+                raise RuntimeError("not entered")
+            if state.type == _STATE_ENTERED_BUFFERING:
+                raise RuntimeError("already iterating")
+            if state.type == _STATE_DISPOSED:
+                raise RuntimeError("subscription has been disposed")
+            assert state.type == _STATE_ENTERED_NOT_BUFFERING, "unknown state"
+
+            glob_list: List[str] = []
+            glob_regexes: List[re.Pattern] = []
+            for glob in state.glob.keys():
+                glob_list.append(glob)
+                glob_regexes.append(re.compile(translate(glob)))
+
+            on_message_subscription_id = await state.client.direct_register_on_message(
+                receiver=self
+            )
+
+            buffer: asyncio.Queue[PubSubClientMessage] = asyncio.Queue()
+            self.state = _PubSubClientSubscriptionStateEnteredBuffering(
+                type=_STATE_ENTERED_BUFFERING,
+                client=state.client,
+                on_message_subscription_id=on_message_subscription_id,
+                exact=state.exact,
+                glob_regexes=glob_regexes,
+                glob_list=glob_list,
+                glob=state.glob,
+                buffer=buffer,
+            )
+            return PubSubClientSubscriptionIterator(buffer)
 
     async def with_timeout(
         self, seconds: float
     ) -> PubSubClientSubscriptionWithTimeoutIterator:
         return PubSubClientSubscriptionWithTimeoutIterator(
-            self, await self.__aiter__(), seconds
+            await self.__aiter__(), seconds
         )
 
 
@@ -699,7 +923,7 @@ class PubSubClient:
         a little setup
         """
         assert self._entered, "not entered"
-        raise NotImplementedError
+        return PubSubClientSubscription(self)
 
     async def subscribe_exact(
         self, topic: bytes, *rest: bytes
@@ -749,10 +973,10 @@ class PubSubClient:
         """
         assert self._entered, "not entered"
         result = await self.subscribe_multi()
-        if glob:
+        if glob is not None:
             for gb in glob:
                 await result.subscribe_glob(gb)
-        if exact:
+        if exact is not None:
             for ex in exact:
                 await result.subscribe_exact(ex)
         return result
