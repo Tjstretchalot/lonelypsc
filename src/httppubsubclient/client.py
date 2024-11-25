@@ -1,5 +1,4 @@
 from typing import (
-    TYPE_CHECKING,
     Dict,
     Iterable,
     List,
@@ -7,11 +6,12 @@ from typing import (
     Optional,
     Protocol,
     Set,
-    Type,
     Union,
 )
-from httppubsubclient.config.config import HttpPubSubConfig
-from httppubsubclient.types.sync_readable_bytes_io import SyncReadableBytesIO
+from httppubsubclient.types.sync_readable_bytes_io import (
+    SyncReadableBytesIO,
+    SyncStandardIO,
+)
 from dataclasses import dataclass
 import asyncio
 import re
@@ -32,7 +32,7 @@ class PubSubClientMessage:
 
     topic: bytes
     """The topic the message was sent to"""
-    sha512: str
+    sha512: bytes
     """The sha512 hash of the message"""
     data: SyncReadableBytesIO
     """The message data"""
@@ -508,15 +508,131 @@ class PubSubDirectOnMessageReceiver(Protocol):
     async def on_message(self, message: PubSubClientMessage) -> None: ...
 
 
+class PubSubError(Exception):
+    """Base class for pub/sub exceptions"""
+
+
+class PubSubRequestError(PubSubError):
+    """An error occurred while making a request to the pub/sub server"""
+
+
+class PubSubRequestAmbiguousError(PubSubRequestError):
+    """We failed to confirm the server received the request, and we also
+    failed to confirm they did not
+    """
+
+
+class PubSubRequestRetriesExhaustedError(PubSubRequestError):
+    """Every attempt we made was met with the server explicitly indicating
+    we should retry (502, 503, or 504 status code), but we have reached the
+    maximum number of retries
+    """
+
+
+class PubSubRequestRefusedError(PubSubRequestError):
+    """The server refused the request and indicated we should not retry"""
+
+
+class PubSubNotifyResult(Protocol):
+    @property
+    def notified(self) -> int:
+        """The number of subscribers that were successfully notified. Success means
+        either an HTTP 200 response, or, for websocket subscribers, an acknowledgement.
+        Ambiguous attempts, such as a connection close after posting the data,
+        are never included in this value even though the subscriber may have
+        received them
+        """
+
+
 class PubSubClientConnector(Protocol):
     """Something capable of making subscribe/unsubscribe requests"""
 
-    async def setup_connector(self) -> None: ...
-    async def teardown_connector(self) -> None: ...
-    async def subscribe_exact(self, /, *, topic: bytes) -> None: ...
-    async def subscribe_glob(self, /, *, glob: str) -> None: ...
-    async def unsubscribe_exact(self, /, *, topic: bytes) -> None: ...
-    async def unsubscribe_glob(self, /, *, glob: str) -> None: ...
+    async def setup_connector(self) -> None:
+        """Performs any necessary setup of the connector methods. Must raise an
+        error if re-entry is not supported but is attempted
+        """
+
+    async def teardown_connector(self) -> None:
+        """If called after a setup, must tear down resources created in that setup.
+        Otherwise, SHOULD ensure all resources are teared down and MAY raise an
+        error.
+
+        If this is implemented such that all resources are as torn down as possible
+        after the first call, MAY simply error on subsequent calls
+        """
+
+    async def subscribe_exact(self, /, *, topic: bytes) -> None:
+        """
+        Subscribe to the given topic, such that the corresponding receiver will
+        receive one additional notification when a message is posted on that
+        topic. MUST raise an error unless this confirmed that during the
+        execution of this function the broadcaster had our client subscribed to
+        the given topic
+
+        Specifically, this means repeating calls to this function with the same
+        topic should typically result in no errors and the same effect as a
+        single call.
+        """
+
+    async def subscribe_glob(self, /, *, glob: str) -> None:
+        """
+        Subscribe to the given topic, such that the corresponding receiver will
+        receive one additional notification when a message is posted to a matching
+        toic. MUST raise an error unless this confirmed that during the
+        execution of this function the broadcaster had our client subscribed to
+        the given glob
+
+        Specifically, this means repeating calls to this function with the same
+        glob should typically result in no errors and the same effect as a
+        single call.
+        """
+
+    async def unsubscribe_exact(self, /, *, topic: bytes) -> None:
+        """
+        Unsubscribe from the given topic, such that the corresponding receiver will
+        receive one fewer notification when a message is posted on that topic. MUST
+        raise an error unless this confirmed that during the execution of this
+        function the broadcaster had our client unsubscribed from the given topic
+
+        Specifically, this means repeating calls to this function with the same
+        topic should typically result in no errors and the same effect as a
+        single call.
+        """
+
+    async def unsubscribe_glob(self, /, *, glob: str) -> None:
+        """
+        Unsubscribe from the given topic, such that the corresponding receiver will
+        receive one fewer notification when a message is posted to a matching topic.
+        MUST raise an error unless this confirmed that during the execution of this
+        function the broadcaster had our client unsubscribed from the given glob
+
+        Specifically, this means repeating calls to this function with the same
+        glob should typically result in no errors and the same effect as a
+        single call.
+        """
+
+    async def notify(
+        self,
+        /,
+        *,
+        topic: bytes,
+        message: SyncStandardIO,
+        length: int,
+        message_sha512: bytes,
+    ) -> PubSubNotifyResult:
+        """Sends a message, which is composed of the next length bytes on the given
+        seekable synchronous io object, to all subscribers of the given topic.
+
+        MUST raise an error unless this confirmed that during the execution of this
+        function the broadcaster received, accepted, and processed the message
+
+        Args:
+            topic (bytes): the topic to post the message to
+            message (SyncStandardIO): the message to post; the current position is as indicated
+                via tell(), and only the next length bytes are part of the message
+            length (int): the number of bytes in the message
+            message_sha512 (bytes): the sha512 hash of the message (64 bytes)
+        """
 
 
 class PubSubClientReceiver(Protocol):
@@ -528,56 +644,6 @@ class PubSubClientReceiver(Protocol):
         self, /, *, receiver: PubSubDirectOnMessageReceiver
     ) -> int: ...
     async def unregister_on_message(self, /, *, registration_id: int) -> None: ...
-
-
-class HttpPubSubClientConnector:
-    def __init__(self, config: HttpPubSubConfig) -> None:
-        raise NotImplementedError
-
-    async def setup_connector(self) -> None:
-        raise NotImplementedError
-
-    async def teardown_connector(self) -> None:
-        raise NotImplementedError
-
-    async def subscribe_exact(self, /, *, topic: bytes) -> None:
-        raise NotImplementedError
-
-    async def subscribe_glob(self, /, *, glob: str) -> None:
-        raise NotImplementedError
-
-    async def unsubscribe_exact(self, /, *, topic: bytes) -> None:
-        raise NotImplementedError
-
-    async def unsubscribe_glob(self, /, *, glob: str) -> None:
-        raise NotImplementedError
-
-
-if TYPE_CHECKING:
-    _: Type[PubSubClientConnector] = HttpPubSubClientConnector
-
-
-class HttpPubSubClientReceiver:
-    def __init__(self, config: HttpPubSubConfig) -> None:
-        raise NotImplementedError
-
-    async def setup_receiver(self) -> None:
-        raise NotImplementedError
-
-    async def teardown_receiver(self) -> None:
-        raise NotImplementedError
-
-    async def register_on_message(
-        self, /, *, receiver: PubSubDirectOnMessageReceiver
-    ) -> int:
-        raise NotImplementedError
-
-    async def unregister_on_message(self, /, *, registration_id: int) -> None:
-        raise NotImplementedError
-
-
-if TYPE_CHECKING:
-    __: Type[PubSubClientReceiver] = HttpPubSubClientReceiver
 
 
 class PubSubClient:
@@ -980,9 +1046,3 @@ class PubSubClient:
             for ex in exact:
                 await result.subscribe_exact(ex)
         return result
-
-
-def HttpPubSubClient(config: HttpPubSubConfig) -> PubSubClient:
-    return PubSubClient(
-        HttpPubSubClientConnector(config), HttpPubSubClientReceiver(config)
-    )

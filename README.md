@@ -38,7 +38,7 @@ This client exposes a FastAPI APIRouter that you can bind however you want and
 a default flow that uses uvicorn to run an ASGI app based on that router.
 
 ```python
-from httppubsubclient.client import HttpPubSubClient
+from httppubsubclient.http_client import HttpPubSubClient
 from httppubsubclient.config import HttpPubSubConfig, make_http_pub_sub_config
 from httppubsubclient.config.auth_config import AuthConfigFromParts
 from httppubsubclient.config.file_config import get_auth_config_from_file

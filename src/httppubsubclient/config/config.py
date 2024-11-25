@@ -85,11 +85,24 @@ class HttpPubSubBindConfig(Protocol):
 
     @property
     def host(self) -> str:
-        """The schema and address that the broadcaster should use to reach us. This
-        can include a path component, which is assumed to be a prefix for the standard
-        routes, and a fragment, which is kept (but potentially appended to) for our
-        subscriptions. When using multiple httppubsubclients at the same schema and
-        adddress they need to be distinguished either by path or fragment
+        """The schema and address that the broadcaster should use to reach us.
+
+        This CAN include a path component, which is assumed to be a prefix for
+        the standard routes, and a fragment, which is kept (but potentially
+        appended to) for our subscriptions. When using multiple
+        httppubsubclients at the same schema and adddress they need to be
+        distinguished either by path or fragment
+
+        WARN:
+            This information is _not_ incorporated into the APIRouter that is passed
+            to the bind config. In other words, if the APIRouter is served as is
+            (like the "uvicorn" strategy does), then you will be expecting to receive
+            requests at the root path, which means that a proxy between the broadcaster
+            and us must be rewriting requests to the correct path.
+
+            If you want to use a prefix path but do not want to use a rewriting proxy,
+            you can use the "manual" strategy and provide the appropriate arguments to
+            include_router, e.g., `app.include_router(router, prefix="/myprefix")`.
         """
 
 
