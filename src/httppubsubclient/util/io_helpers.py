@@ -1,6 +1,6 @@
 import io
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Iterator, Optional, Self, Type
+from typing import TYPE_CHECKING, Any, Iterator, Optional, Type
 from httppubsubclient.types.sync_readable_bytes_io import (
     SyncStandardWithLengthIO,
     SyncStandardIO,
@@ -27,7 +27,7 @@ class PositionedSyncStandardIO(io.IOBase):
     def __next__(self) -> bytes:
         return self.read(io.DEFAULT_BUFFER_SIZE)
 
-    def __enter__(self) -> Self:
+    def __enter__(self) -> "PositionedSyncStandardIO":
         raise NotImplementedError
 
     def __exit__(
@@ -138,7 +138,7 @@ class PrefixedSyncStandardIO(io.IOBase):
     def __next__(self) -> bytes:
         return self.read(io.DEFAULT_BUFFER_SIZE)
 
-    def __enter__(self) -> Self:
+    def __enter__(self) -> "PrefixedSyncStandardIO":
         raise NotImplementedError
 
     def __exit__(
