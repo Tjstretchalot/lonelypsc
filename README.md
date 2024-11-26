@@ -39,10 +39,11 @@ a default flow that uses uvicorn to run an ASGI app based on that router.
 
 ```python
 from httppubsubclient.http_client import HttpPubSubClient
-from httppubsubclient.config import HttpPubSubConfig, make_http_pub_sub_config
+from httppubsubclient.config.config import HttpPubSubConfig, make_http_pub_sub_config
 from httppubsubclient.config.auth_config import AuthConfigFromParts
 from httppubsubclient.config.file_config import get_auth_config_from_file
 import json
+import os
 
 def _build_config() -> HttpPubSubConfig:
     # subscriber-secrets.json is produced from the --setup command on the
@@ -110,19 +111,19 @@ async def main():
 
         print('Subscribing to foo/bar (exact match) until 1 message is received...')
         async with client.subscribe_exact(b'foo/bar') as subscription:
-            async for message in subscription:
+            async for message in await subscription.messages():
                 print(f'Received message on {message.topic}: {message.data.read().decode('utf-8')}')
                 break
 
         print('Subscribing to multiple topics using glob pattern until 1 message is received...')
         async with client.subscribe_glob('foo/*') as subscription:
-            async for message in subscription:
+            async for message in await subscription.messages():
                 print(f'Received message on {message.topic}: {message.data.read().decode('utf-8')}')
                 break
 
         print('Subscribing to a variety of topics until one message is received...')
         async with client.subscribe(exact=[b'foo/bar'], glob=['baz/*']) as subscription:
-            async for message in subscription:
+            async for message in await subscription.messages():
                 print(f'Received message on {message.topic}: {message.data.read().decode('utf-8')}')
                 break
 
@@ -130,7 +131,7 @@ async def main():
         async with client.subscribe_multi() as subscription:
             await subscription.subscribe_exact(b'foo/bar')
             await subscription.subscribe_glob('baz/*')
-            async for message in subscription:
+            async for message in await subscription.messages():
                 print(f'Received message on {message.topic}: {message.data.read().decode('utf-8')}')
                 break
 
@@ -140,9 +141,9 @@ async def main():
         )
         timeout_task = asyncio.create_task(asyncio.sleep(5))
         async with client.subscribe_exact(b'foo/bar') as subscription:
-            # implementation note: will error if you try to call __aiter__ more than
+            # implementation note: will error if you try to call messages() more than
             # once on a subscription
-            sub_iter = await subscription.__aiter__()
+            sub_iter = await subscription.messages()
             message_task = asyncio.create_task(sub_iter.__anext__())
             await asyncio.wait({timeout_task, message_task}, return_when=asyncio.FIRST_COMPLETED)
             if not message_task.cancel():
@@ -155,7 +156,7 @@ async def main():
 
         print('Subscribing to one exact topic with simple timeout behavior...')
         async with client.subscribe_exact(b'foo/bar') as subscription:
-            async for message in subscription.with_timeout(5):
+            async for message in await subscription.with_timeout(5):
                 if message is None:
                     print('Been 5 seconds without a message! Ending early')
                     break
@@ -167,6 +168,10 @@ async def main():
         print(f'Notified {result.notified} subscribers to foo/baz')
 
         print('Sending a notification to foo/baz with a file...')
+        if not os.path.exists('hello.txt'):
+            with open('hello.txt', 'w') as f:
+                f.write('Hello, world!')
+
         with open('hello.txt', 'rb') as f:
             result = await client.notify(topic=b'foo/baz', sync_file=f)
         print(f'Notified {result.notified} subscribers to foo/baz')
@@ -188,6 +193,23 @@ is suitable for, with glob patterns primarily being for analytics/logging/debugg
 on a separate client, so this is a relatively non-issue. Generally, just put the
 analytics/logging/debugging that attaches to a glob pattern (e.g., `**` for everything)
 on their own client (e.g via a websocket client).
+
+## Notify-Only Clients
+
+If you want to use this library to notify over http but don't need to bind, just
+set your bind config to a no-op, e.g.,
+
+```python
+from fastapi import APIRouter
+from httppubsubclient.config.config import make_http_pub_sub_config
+
+async def _noop_callback(router: APIRouter) -> None: ...
+
+make_http_pub_sub_config(
+    bind={"type": "manual", "callback": _noop_callback},
+    # ... other args omitted for brevity ...
+)
+```
 
 ## TODO
 

@@ -1,3 +1,7 @@
+import hashlib
+from io import BytesIO
+import os
+from types import TracebackType
 from typing import (
     Dict,
     Iterable,
@@ -6,7 +10,10 @@ from typing import (
     Optional,
     Protocol,
     Set,
+    Type,
     Union,
+    overload,
+    TYPE_CHECKING,
 )
 from httppubsubclient.types.sync_readable_bytes_io import (
     SyncReadableBytesIO,
@@ -15,6 +22,8 @@ from httppubsubclient.types.sync_readable_bytes_io import (
 from dataclasses import dataclass
 import asyncio
 import re
+
+from httppubsubclient.util.io_helpers import PositionedSyncStandardIO
 
 try:
     from glob import translate as _glob_translate  # type: ignore
@@ -26,9 +35,15 @@ except ImportError:
     from fnmatch import translate
 
 
+class _Cleanup(Protocol):
+    async def __call__(self) -> None: ...
+
+
 @dataclass
-class PubSubClientMessage:
-    """A message received on a topic"""
+class PubSubClientMessageWithCleanup:
+    """A message received on a topic plus the function to cleanup any associated
+    resources
+    """
 
     topic: bytes
     """The topic the message was sent to"""
@@ -36,18 +51,58 @@ class PubSubClientMessage:
     """The sha512 hash of the message"""
     data: SyncReadableBytesIO
     """The message data"""
+    cleanup: _Cleanup
+    """The function to cleanup the message once it's removed from the buffer and done with"""
+
+
+class PubSubClientMessage(Protocol):
+    """A message received on a topic where cleanup is already being handled"""
+
+    @property
+    def topic(self) -> bytes:
+        """The topic the message was sent to"""
+
+    @property
+    def sha512(self) -> bytes:
+        """The sha512 hash of the message"""
+
+    @property
+    def data(self) -> SyncReadableBytesIO:
+        """The message data"""
+
+
+if TYPE_CHECKING:
+    _: Type[PubSubClientMessage] = PubSubClientMessageWithCleanup
 
 
 class PubSubClientSubscriptionIterator:
-    def __init__(self, buffer: asyncio.Queue[PubSubClientMessage]) -> None:
+    def __init__(
+        self,
+        buffer: asyncio.Queue[PubSubClientMessageWithCleanup],
+        cleanup: asyncio.Queue[PubSubClientMessageWithCleanup],
+    ) -> None:
         self.buffer = buffer
+        self.cleanup = cleanup
 
-    async def __aiter__(self) -> "PubSubClientSubscriptionIterator":
-        raise NotImplementedError("only one iterator can be created")
+    def __aiter__(self) -> "PubSubClientSubscriptionIterator":
+        return self
 
     async def __anext__(self) -> PubSubClientMessage:
         """Explicitly expects cancellation"""
-        return await self.buffer.get()
+        while True:
+            try:
+                item_to_cleanup = self.cleanup.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            await item_to_cleanup.cleanup()
+
+        result = await self.buffer.get()
+        try:
+            self.cleanup.put_nowait(result)
+        except asyncio.QueueFull:
+            await result.cleanup()
+            raise
+        return result
 
 
 class PubSubClientSubscriptionWithTimeoutIterator:
@@ -64,8 +119,8 @@ class PubSubClientSubscriptionWithTimeoutIterator:
         self.raw_iter = raw_iter
         self.timeout = timeout
 
-    async def __aiter__(self) -> "PubSubClientSubscriptionWithTimeoutIterator":
-        raise NotImplementedError("only one iterator can be created")
+    def __aiter__(self) -> "PubSubClientSubscriptionWithTimeoutIterator":
+        return self
 
     async def __anext__(self) -> Optional[PubSubClientMessage]:
         """Explicitly expects cancellation"""
@@ -161,8 +216,14 @@ class _PubSubClientSubscriptionStateEnteredBuffering:
     glob: Dict[str, int]
     """The glob -> subscription id pairs we are subscribed to"""
 
-    buffer: asyncio.Queue[PubSubClientMessage]
+    buffer: asyncio.Queue[PubSubClientMessageWithCleanup]
     """the buffer that we push matching messages to such that they are read by anext"""
+
+    cleanup: asyncio.Queue[PubSubClientMessageWithCleanup]
+    """the messages that haven't been cleaned up yet but need to be; this is normally cleared
+    out when calling anext on the iterator, but the last item has to be cleaned out when the
+    subscription is exited
+    """
 
 
 @dataclass
@@ -206,7 +267,7 @@ class PubSubClientSubscription:
 
     ```
     async with client.subscribe_exact(b"topic") as subscription: # subscribes
-        async for message in subscription:  # starts buffering
+        async for message in await subscription.messages():  # starts buffering
             ...
     # exiting the subscription unsubscribes and stops buffering
     ```
@@ -215,13 +276,13 @@ class PubSubClientSubscription:
 
     ```
     async with client.subscribe_exact(b"topic") as subscription:  # subscribes
-        async for message in subscription:  # starts buffering
+        async for message in await subscription.messages():  # starts buffering
             break
 
         # still buffering! furthermore, httppubsubclient doesn't
         # know if the other iter is still going or not! thus,
         # this is ambiguous!
-        async for message in subscription:  # ERROR
+        async for message in await subscription.messages():  # ERROR
             ...
     # exiting the subscription unsubscribes and stops buffering
     ```
@@ -234,14 +295,14 @@ class PubSubClientSubscription:
     ```
     async with client.subscribe_exact(b"topic"):  # subscribes
         async with client.subscribe_exact(b"topic") as subscription: # no-op
-            async for message in subscription: # starts buffering
+            async for message in await subscription.messages(): # starts buffering
                 ...
         # exiting the subscription stops buffering
 
         # any messages created before the next iterator is created are dropped
 
         async with client.subscribe_exact(b"topic") as subscription:  # no-op
-            async for message in subscription:  # starts buffering
+            async for message in await subscription.messages():  # starts buffering
                 ...
         # exiting the subscription stops buffering
     # exiting the last subscription to `topic` unsubscribes
@@ -253,7 +314,7 @@ class PubSubClientSubscription:
 
     ```
     async with client.subscribe_exact(b"topic") as subscription:  # subscribes
-        my_iter = await subscription.__aiter__()  # starts buffering
+        my_iter = await subscription.messages()  # starts buffering
 
         # whenever you want...
         message = await my_iter.__anext__()  # gets a message, blocking if required
@@ -261,10 +322,12 @@ class PubSubClientSubscription:
     ```
     """
 
-    def __init__(self, client: "PubSubClient") -> None:
+    def __init__(
+        self, client: "PubSubClient", /, *, exact: Set[bytes], glob: Set[str]
+    ) -> None:
         self.state: _PubSubClientSubscriptionState = (
             _PubSubClientSubscriptionStateNotEntered(
-                _STATE_NOT_ENTERED, client, set(), set()
+                _STATE_NOT_ENTERED, client, exact, glob
             )
         )
         self._state_lock: asyncio.Lock = asyncio.Lock()
@@ -309,7 +372,12 @@ class PubSubClientSubscription:
 
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+    async def __aexit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_value: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> None:
         async with self._state_lock:
             state = self.state
             if (
@@ -328,6 +396,30 @@ class PubSubClientSubscription:
                 except BaseException as e:
                     if exc is None:
                         exc = e
+
+                while True:
+                    try:
+                        message = state.buffer.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+
+                    try:
+                        await message.cleanup()
+                    except BaseException as e:
+                        if exc is None:
+                            exc = e
+
+                while True:
+                    try:
+                        message = state.cleanup.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+
+                    try:
+                        await message.cleanup()
+                    except BaseException as e:
+                        if exc is None:
+                            exc = e
 
             for sub_id in state.exact.values():
                 try:
@@ -454,15 +546,33 @@ class PubSubClientSubscription:
             if exc is not None:
                 raise exc
 
-    async def on_message(self, message: PubSubClientMessage) -> None:
+    async def on_message(self, message: PubSubClientMessageWithCleanup) -> None:
         # can avoid a lock by using put_nowait, and raising instead of blocking is
         # preferred in the unlikely event that the queue has a max size AND we reach it
         state = self.state
         if state.type != _STATE_ENTERED_BUFFERING:
+            await message.cleanup()
             return
-        state.buffer.put_nowait(message)
 
-    async def __aiter__(self) -> PubSubClientSubscriptionIterator:
+        found = message.topic in state.exact
+        if not found:
+            try:
+                topic_str = message.topic.decode("utf-8")
+            except UnicodeDecodeError:
+                topic_str = None
+
+            if topic_str is not None:
+                for regex in state.glob_regexes:
+                    if regex.match(topic_str):
+                        found = True
+                        break
+
+        if found:
+            state.buffer.put_nowait(message)
+        else:
+            await message.cleanup()
+
+    async def messages(self) -> PubSubClientSubscriptionIterator:
         async with self._state_lock:
             state = self.state
             if state.type == _STATE_NOT_ENTERED:
@@ -483,7 +593,8 @@ class PubSubClientSubscription:
                 receiver=self
             )
 
-            buffer: asyncio.Queue[PubSubClientMessage] = asyncio.Queue()
+            buffer: asyncio.Queue[PubSubClientMessageWithCleanup] = asyncio.Queue()
+            cleanup: asyncio.Queue[PubSubClientMessageWithCleanup] = asyncio.Queue()
             self.state = _PubSubClientSubscriptionStateEnteredBuffering(
                 type=_STATE_ENTERED_BUFFERING,
                 client=state.client,
@@ -493,19 +604,20 @@ class PubSubClientSubscription:
                 glob_list=glob_list,
                 glob=state.glob,
                 buffer=buffer,
+                cleanup=cleanup,
             )
-            return PubSubClientSubscriptionIterator(buffer)
+            return PubSubClientSubscriptionIterator(buffer, cleanup)
 
     async def with_timeout(
         self, seconds: float
     ) -> PubSubClientSubscriptionWithTimeoutIterator:
         return PubSubClientSubscriptionWithTimeoutIterator(
-            await self.__aiter__(), seconds
+            await self.messages(), seconds
         )
 
 
-class PubSubDirectOnMessageReceiver(Protocol):
-    async def on_message(self, message: PubSubClientMessage) -> None: ...
+class PubSubDirectOnMessageWithCleanupReceiver(Protocol):
+    async def on_message(self, message: PubSubClientMessageWithCleanup) -> None: ...
 
 
 class PubSubError(Exception):
@@ -641,7 +753,7 @@ class PubSubClientReceiver(Protocol):
     async def setup_receiver(self) -> None: ...
     async def teardown_receiver(self) -> None: ...
     async def register_on_message(
-        self, /, *, receiver: PubSubDirectOnMessageReceiver
+        self, /, *, receiver: PubSubDirectOnMessageWithCleanupReceiver
     ) -> int: ...
     async def unregister_on_message(self, /, *, registration_id: int) -> None: ...
 
@@ -696,7 +808,12 @@ class PubSubClient:
                 self._entered = False
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback) -> None:
+    async def __aexit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_value: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> None:
         assert self._entered, "not entered"
 
         self._entered = False
@@ -943,7 +1060,7 @@ class PubSubClient:
         assert result == "ok"
 
     async def direct_register_on_message(
-        self, /, *, receiver: PubSubDirectOnMessageReceiver
+        self, /, *, receiver: PubSubDirectOnMessageWithCleanupReceiver
     ) -> int:
         """Registers the given callback to be invoked whenever we receive a message
         for any topic. Returns a registration id that must be provided to
@@ -977,7 +1094,7 @@ class PubSubClient:
             registration_id=registration_id
         )
 
-    async def subscribe_multi(self) -> PubSubClientSubscription:
+    def subscribe_multi(self) -> PubSubClientSubscription:
         """Returns a new async context manager within which you can
         register multiple subscriptions (exact or glob). When exiting,
         the subscriptions will be removed.
@@ -985,15 +1102,13 @@ class PubSubClient:
         Re-entrant subscriptions are supported and avoid duplicate subscribe/
         unsubscribe requests to the broadcaster
 
-        All the other `subscribe_*` methods just delegate to this plus
-        a little setup
+        All the other `subscribe_*` methods behave similarly to this but with
+        a bit of setup in advance.
         """
         assert self._entered, "not entered"
-        return PubSubClientSubscription(self)
+        return PubSubClientSubscription(self, exact=set(), glob=set())
 
-    async def subscribe_exact(
-        self, topic: bytes, *rest: bytes
-    ) -> PubSubClientSubscription:
+    def subscribe_exact(self, topic: bytes, *rest: bytes) -> PubSubClientSubscription:
         """Subscribe to one or more topics by exact match. The result is an
         async context manager which, when exited, will unsubscribe from the
         topic(s)
@@ -1002,13 +1117,9 @@ class PubSubClient:
         unsubscribe requests to the broadcaster
         """
         assert self._entered, "not entered"
-        result = await self.subscribe_multi()
-        await result.subscribe_exact(topic)
-        for t in rest:
-            await result.subscribe_exact(t)
-        return result
+        return PubSubClientSubscription(self, exact={topic, *rest}, glob=set())
 
-    async def subscribe_glob(self, glob: str, *rest: str) -> PubSubClientSubscription:
+    def subscribe_glob(self, glob: str, *rest: str) -> PubSubClientSubscription:
         """Subscribe to one or more topics by glob match. The result is an
         async context manager which, when exited, will unsubscribe from the
         topic(s)
@@ -1017,19 +1128,15 @@ class PubSubClient:
         unsubscribe requests to the broadcaster
         """
         assert self._entered, "not entered"
-        result = await self.subscribe_multi()
-        await result.subscribe_glob(glob)
-        for t in rest:
-            await result.subscribe_glob(t)
-        return result
+        return PubSubClientSubscription(self, exact=set(), glob={glob, *rest})
 
-    async def subscribe(
+    def subscribe(
         self,
         /,
         *,
         glob: Optional[Iterable[str]] = None,
         exact: Optional[Iterable[bytes]] = None,
-    ):
+    ) -> PubSubClientSubscription:
         """Subscribe to a combination of glob and/or exact topics. The result is
         an async context manager which, when exited, will unsubscribe from the
         topic(s)
@@ -1038,11 +1145,88 @@ class PubSubClient:
         unsubscribe requests to the broadcaster
         """
         assert self._entered, "not entered"
-        result = await self.subscribe_multi()
-        if glob is not None:
-            for gb in glob:
-                await result.subscribe_glob(gb)
-        if exact is not None:
-            for ex in exact:
-                await result.subscribe_exact(ex)
-        return result
+        return PubSubClientSubscription(
+            self, exact=set(exact or ()), glob=set(glob or ())
+        )
+
+    @overload
+    async def notify(
+        self, /, *, topic: bytes, data: bytes, sha512: Optional[bytes] = None
+    ) -> PubSubNotifyResult: ...
+
+    @overload
+    async def notify(
+        self,
+        /,
+        *,
+        topic: bytes,
+        sync_file: SyncStandardIO,
+        length: Optional[int] = None,
+        sha512: Optional[bytes] = None,
+    ) -> PubSubNotifyResult: ...
+
+    async def notify(
+        self,
+        /,
+        *,
+        topic: bytes,
+        data: Optional[bytes] = None,
+        sync_file: Optional[SyncStandardIO] = None,
+        length: Optional[int] = None,
+        sha512: Optional[bytes] = None,
+    ) -> PubSubNotifyResult:
+        """Notifies all subscribers of the given topic of the message. The message
+        may be provided as bytes or a readable synchronous file-like object.
+
+        If the sha512 is not provided it will be calculated from the message, which
+        will incidentally discover the length of the message (via seeking to EOF)
+        if not provided. If the length and sha512 are provided then the file
+        will only be read once.
+
+        If the message is provided as bytes and length is set, then the length must
+        be equal to len(message).
+        """
+        assert (
+            data is None or sync_file is None
+        ), "only one of data or sync_file may be provided"
+        assert (
+            data is not None or sync_file is not None
+        ), "either data or sync_file must be provided"
+        assert (
+            data is None or length is None or len(data) == length
+        ), "if data is provided, length must be None or len(data)"
+        assert len(topic) <= 65535, "topic too long"
+        assert self._entered, "not entered"
+
+        if sync_file is not None:
+            file_starts_at = sync_file.tell()
+            if length is None:
+                length = sync_file.seek(0, os.SEEK_END) - file_starts_at
+            sync_file = PositionedSyncStandardIO(sync_file, file_starts_at, length)
+            del file_starts_at
+            sync_file.seek(0, os.SEEK_SET)
+        else:
+            assert data is not None, "impossible"
+            length = len(data)
+            sync_file = BytesIO(data)
+
+        # message is used to make it clear to the type checker that either
+        # data or sync_file is set
+
+        if sha512 is None:
+            if data is not None:
+                sha512 = hashlib.sha512(data).digest()
+            else:
+                hasher = hashlib.sha512()
+                while True:
+                    chunk = sync_file.read(8192)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+                    await asyncio.sleep(0)
+                sha512 = hasher.digest()
+                sync_file.seek(0, os.SEEK_SET)
+
+        return await self.connector.notify(
+            topic=topic, message=sync_file, length=length, message_sha512=sha512
+        )

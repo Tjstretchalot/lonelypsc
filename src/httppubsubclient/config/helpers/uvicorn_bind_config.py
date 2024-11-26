@@ -18,7 +18,13 @@ class BindWithUvicornCallback:
         app.include_router(router)
         app.router.redirect_slashes = False
         uv_config = uvicorn.Config(
-            app, host=self.settings["host"], port=self.settings["port"]
+            app,
+            host=self.settings["host"],
+            port=self.settings["port"],
+            lifespan="off",
+            # prevents spurious cancellation errors
+            log_level="warning",
+            # reduce default logging since this isn't the main deal for the process
         )
         uv_server = uvicorn.Server(uv_config)
         await uv_server.serve()

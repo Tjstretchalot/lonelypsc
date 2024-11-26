@@ -28,9 +28,9 @@ from fastapi.responses import Response
 from httppubsubclient.client import (
     PubSubClient,
     PubSubClientConnector,
-    PubSubClientMessage,
+    PubSubClientMessageWithCleanup,
     PubSubClientReceiver,
-    PubSubDirectOnMessageReceiver,
+    PubSubDirectOnMessageWithCleanupReceiver,
     PubSubRequestAmbiguousError,
     PubSubRequestRefusedError,
     PubSubRequestRetriesExhaustedError,
@@ -299,7 +299,7 @@ class HttpPubSubClientConnector:
     @property
     def _receive_url(self) -> str:
         host_url = self.config.host
-        host_fragment_starts_at = host_url.index("#")
+        host_fragment_starts_at = host_url.find("#")
         host_fragment = ""
         if host_fragment_starts_at != -1:
             host_fragment = host_url[host_fragment_starts_at:]
@@ -510,7 +510,7 @@ if TYPE_CHECKING:
 class HttpPubSubClientReceiver:
     def __init__(self, config: HttpPubSubConfig) -> None:
         self.config = config
-        self.handlers: List[Tuple[int, PubSubDirectOnMessageReceiver]] = []
+        self.handlers: List[Tuple[int, PubSubDirectOnMessageWithCleanupReceiver]] = []
         """The registered on_message receivers"""
         self.bind_task: Optional[asyncio.Task] = None
 
@@ -538,7 +538,7 @@ class HttpPubSubClientReceiver:
         authorization: Annotated[Optional[str], Header()] = None,
         repr_digest: Annotated[Optional[str], Header()] = None,
         x_topic: Annotated[Optional[str], Header()] = None,
-    ):
+    ) -> Response:
         """HttpPubSubClientReceiver primary endpoint
 
         The authorization header provided shows that the request came from a broadcaster,
@@ -620,7 +620,7 @@ class HttpPubSubClientReceiver:
 
         with tempfile.SpooledTemporaryFile(
             max_size=self.config.message_body_spool_size, mode="w+b"
-        ) as request_body:
+        ) as spooled_request_body:
             read_length = 0
             hasher = hashlib.sha512()
             stream_iter = request.stream().__aiter__()
@@ -631,33 +631,45 @@ class HttpPubSubClientReceiver:
                     break
                 hasher.update(chunk)
                 read_length += len(chunk)
-                request_body.write(chunk)
+                spooled_request_body.write(chunk)
 
             real_digest = hasher.digest()
-            if real_digest != expected_digest_b64:
+            if real_digest != expected_digest:
                 return Response(
                     status_code=403,
                     headers={"Content-Type": "application/json; charset=utf-8"},
                     content=b'{"unsubscribe": true, "reason": "incorrect sha-512 repr-digest"}',
                 )
 
-            message = PubSubClientMessage(
-                topic=topic,
-                sha512=real_digest,
-                data=request_body,
-            )
+            for idx, (reg_id, handler) in enumerate(tuple(self.handlers)):
+                if len(self.handlers) <= idx or self.handlers[idx][0] != reg_id:
+                    for alt_idx in range(min(idx, len(self.handlers))):
+                        if self.handlers[alt_idx][0] == reg_id:
+                            break
+                    else:
+                        continue
+                spooled_request_body.seek(0)
 
-            # not doing a for loop to be clear what we want to happen if
-            # handlers is mutated during iteration
-            idx = 0
-            while idx < len(self.handlers):
-                handler = self.handlers[idx][1]
-                request_body.seek(0)
+                # we want message.cleanup() not to interfere with future
+                # handlers if called multiple times, hence we make a new event
+                # per handler
+                handler_done = asyncio.Event()
+
+                async def handler_cleanup() -> None:
+                    handler_done.set()
+
+                message = PubSubClientMessageWithCleanup(
+                    topic=topic,
+                    sha512=real_digest,
+                    data=spooled_request_body,
+                    cleanup=handler_cleanup,
+                )
                 await handler.on_message(message)
-                idx += 1
+                await handler_done.wait()
+        return Response(status_code=200)
 
     async def register_on_message(
-        self, /, *, receiver: PubSubDirectOnMessageReceiver
+        self, /, *, receiver: PubSubDirectOnMessageWithCleanupReceiver
     ) -> int:
         new_id = 1 if not self.handlers else self.handlers[-1][0] + 1
         self.handlers.append((new_id, receiver))
