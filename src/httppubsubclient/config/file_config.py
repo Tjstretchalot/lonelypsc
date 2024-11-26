@@ -6,6 +6,10 @@ from httppubsubclient.config.helpers.none_auth_config import (
     IncomingNoneAuth,
     OutgoingNoneAuth,
 )
+from httppubsubclient.config.helpers.token_auth_config import (
+    IncomingTokenAuth,
+    OutgoingTokenAuth,
+)
 
 
 def get_auth_config_from_file(
@@ -42,9 +46,15 @@ def get_auth_config_from_file(
 
     if incoming_type == "none":
         incoming = IncomingNoneAuth()
+    elif incoming_type == "token":
+        assert incoming_secret is not None, "impossible"
+        incoming = IncomingTokenAuth(incoming_secret)
 
     if outgoing_type == "none":
         outgoing = OutgoingNoneAuth()
+    elif outgoing_type == "token":
+        assert outgoing_secret is not None, "impossible"
+        outgoing = OutgoingTokenAuth(outgoing_secret)
 
     assert (
         incoming is not None
