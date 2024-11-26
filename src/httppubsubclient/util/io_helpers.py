@@ -70,7 +70,7 @@ class PositionedSyncStandardIO(io.IOBase):
     def writelines(self, lines: Any, /) -> None:
         raise OSError("not implemented")
 
-    def readline(self, size: int | None = -1, /) -> bytes:
+    def readline(self, size: Optional[int] = -1, /) -> bytes:
         raise OSError("not implemented")
 
     def __del__(self) -> None: ...
@@ -181,7 +181,7 @@ class PrefixedSyncStandardIO(io.IOBase):
     def writelines(self, lines: Any, /) -> None:
         raise OSError("not implemented")
 
-    def readline(self, size: int | None = -1, /) -> bytes:
+    def readline(self, size: Optional[int] = -1, /) -> bytes:
         raise OSError("not implemented")
 
     def __del__(self) -> None: ...
