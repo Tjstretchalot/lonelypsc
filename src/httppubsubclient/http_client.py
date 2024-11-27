@@ -565,7 +565,7 @@ class HttpPubSubClientReceiver:
             )
 
         try:
-            topic = base64.b64decode(x_topic)
+            topic = base64.b64decode(x_topic + "==")
         except BaseException:
             return Response(
                 status_code=400,
@@ -592,7 +592,7 @@ class HttpPubSubClientReceiver:
             )
 
         try:
-            expected_digest = base64.b64decode(expected_digest_b64)
+            expected_digest = base64.b64decode(expected_digest_b64 + "==")
         except BaseException:
             return Response(
                 status_code=400,
@@ -601,7 +601,7 @@ class HttpPubSubClientReceiver:
             )
 
         auth_result = await self.config.is_receive_allowed(
-            url=request.url.path,
+            url=str(request.url),
             topic=topic,
             message_sha512=expected_digest,
             now=time.time(),
@@ -691,6 +691,23 @@ if TYPE_CHECKING:
 
 
 def HttpPubSubClient(config: HttpPubSubConfig) -> PubSubClient:
+    async def setup() -> None:
+        await config.setup_incoming_auth()
+        try:
+            await config.setup_outgoing_auth()
+        except BaseException:
+            await config.teardown_incoming_auth()
+            raise
+
+    async def teardown() -> None:
+        try:
+            await config.teardown_outgoing_auth()
+        finally:
+            await config.teardown_incoming_auth()
+
     return PubSubClient(
-        HttpPubSubClientConnector(config), HttpPubSubClientReceiver(config)
+        HttpPubSubClientConnector(config),
+        HttpPubSubClientReceiver(config),
+        setup=setup,
+        teardown=teardown,
     )

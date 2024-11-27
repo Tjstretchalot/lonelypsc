@@ -3,6 +3,8 @@ from io import BytesIO
 import os
 from types import TracebackType
 from typing import (
+    Awaitable,
+    Callable,
     Dict,
     Iterable,
     List,
@@ -760,7 +762,12 @@ class PubSubClientReceiver(Protocol):
 
 class PubSubClient:
     def __init__(
-        self, connector: PubSubClientConnector, receiver: PubSubClientReceiver
+        self,
+        connector: PubSubClientConnector,
+        receiver: PubSubClientReceiver,
+        *,
+        setup: Callable[[], Awaitable[None]],
+        teardown: Callable[[], Awaitable[None]],
     ) -> None:
         self.connector: PubSubClientConnector = connector
         """The connector that can make subscribe/unsubscribe requests. We assume that we
@@ -771,6 +778,12 @@ class PubSubClient:
         """The receiver that can register additional callbacks when messages are received.
         We assume that we need to setup this when we are entered and teardown when we are exited.
         """
+
+        self._setup = setup
+        """A function to call when we are entered"""
+
+        self._teardown = teardown
+        """A function to call when we are exited"""
 
         self.exact_subscriptions: Dict[bytes, int] = {}
         """Maps from topic we've subscribed to to the number of requests to subscribe to it"""
@@ -797,15 +810,23 @@ class PubSubClient:
 
     async def __aenter__(self) -> "PubSubClient":
         assert not self._entered, "already entered (not re-entrant)"
-        await self.connector.setup_connector()
+        await self._setup()
         self._entered = True
         try:
-            await self.receiver.setup_receiver()
+            await self.connector.setup_connector()
+            try:
+                await self.receiver.setup_receiver()
+            except BaseException:
+                await self.connector.teardown_connector()
+                raise
         except BaseException:
             try:
-                await self.connector.teardown_connector()
+                await self._teardown()
             finally:
                 self._entered = False
+
+            raise
+
         return self
 
     async def __aexit__(
@@ -843,6 +864,11 @@ class PubSubClient:
 
         try:
             await self.connector.teardown_connector()
+        except BaseException as e:
+            excs.append(e)
+
+        try:
+            await self._teardown()
         except BaseException as e:
             excs.append(e)
 

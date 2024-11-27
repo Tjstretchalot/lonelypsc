@@ -2,6 +2,11 @@ import json
 from typing import Literal, Optional, Tuple, cast
 
 from httppubsubclient.config.auth_config import IncomingAuthConfig, OutgoingAuthConfig
+from httppubsubclient.config.helpers.hmac_auth_config import (
+    IncomingHmacAuth,
+    IncomingHmacAuthSqliteDBConfig,
+    OutgoingHmacAuth,
+)
 from httppubsubclient.config.helpers.none_auth_config import (
     IncomingNoneAuth,
     OutgoingNoneAuth,
@@ -49,12 +54,20 @@ def get_auth_config_from_file(
     elif incoming_type == "token":
         assert incoming_secret is not None, "impossible"
         incoming = IncomingTokenAuth(incoming_secret)
+    elif incoming_type == "hmac":
+        assert incoming_secret is not None, "impossible"
+        incoming = IncomingHmacAuth(
+            incoming_secret, db_config=IncomingHmacAuthSqliteDBConfig(":memory:")
+        )
 
     if outgoing_type == "none":
         outgoing = OutgoingNoneAuth()
     elif outgoing_type == "token":
         assert outgoing_secret is not None, "impossible"
         outgoing = OutgoingTokenAuth(outgoing_secret)
+    elif outgoing_type == "hmac":
+        assert outgoing_secret is not None, "impossible"
+        outgoing = OutgoingHmacAuth(outgoing_secret)
 
     assert (
         incoming is not None
