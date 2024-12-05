@@ -1,7 +1,7 @@
 import io
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Iterator, Optional, Type
-from httppubsubclient.types.sync_readable_bytes_io import (
+from httppubsubclient.types.sync_io import (
     SyncStandardWithLengthIO,
     SyncStandardIO,
 )

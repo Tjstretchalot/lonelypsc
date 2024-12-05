@@ -42,7 +42,7 @@ from aiohttp.typedefs import LooseHeaders
 import random
 
 from httppubsubclient.config.helpers.uvicorn_bind_config import handle_bind_with_uvicorn
-from httppubsubclient.types.sync_readable_bytes_io import SyncStandardIO
+from httppubsubclient.types.sync_io import SyncStandardIO
 from httppubsubclient.util.io_helpers import (
     PositionedSyncStandardIO,
     PrefixedSyncStandardIO,

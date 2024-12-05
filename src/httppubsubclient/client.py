@@ -17,7 +17,7 @@ from typing import (
     overload,
     TYPE_CHECKING,
 )
-from httppubsubclient.types.sync_readable_bytes_io import (
+from httppubsubclient.types.sync_io import (
     SyncReadableBytesIO,
     SyncStandardIO,
 )
