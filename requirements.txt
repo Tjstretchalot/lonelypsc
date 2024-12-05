@@ -25,3 +25,4 @@ starlette==0.41.2
 typing_extensions==4.12.2
 uvicorn==0.32.0
 yarl==1.17.1
+zstandard==0.23.0

@@ -24,3 +24,8 @@ dependencies = [
     "uvicorn>=0.32"
 ]
 
+
+[project.optional-dependencies]
+standard = [
+    "zstandard>=0.23"
+]

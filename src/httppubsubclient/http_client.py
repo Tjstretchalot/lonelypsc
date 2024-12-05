@@ -1,7 +1,6 @@
 import asyncio
 import base64
 from dataclasses import dataclass
-from functools import partial
 import hashlib
 import io
 import json
@@ -36,7 +35,8 @@ from httppubsubclient.client import (
     PubSubRequestRetriesExhaustedError,
     PubSubNotifyResult,
 )
-from httppubsubclient.config.config import HttpPubSubBroadcasterConfig, HttpPubSubConfig
+from httppubsubclient.config.config import PubSubBroadcasterConfig
+from httppubsubclient.config.http_config import HttpPubSubConfig
 import aiohttp
 from aiohttp.typedefs import LooseHeaders
 import random
@@ -57,7 +57,7 @@ T = TypeVar("T")
 
 
 class _BroadcasterCallable(Protocol[T_co]):
-    async def __call__(self, /, *, broadcaster: HttpPubSubBroadcasterConfig) -> T_co:
+    async def __call__(self, /, *, broadcaster: PubSubBroadcasterConfig) -> T_co:
         raise NotImplementedError
 
 
@@ -104,7 +104,7 @@ class HttpPubSubClientConnector:
         self,
         /,
         *,
-        broadcaster: HttpPubSubBroadcasterConfig,
+        broadcaster: PubSubBroadcasterConfig,
         headers: LooseHeaders,
         path: str,
         body: SyncStandardIO,
@@ -217,7 +217,7 @@ class HttpPubSubClientConnector:
 
         async def broadcaster_callable(
             *,
-            broadcaster: HttpPubSubBroadcasterConfig,
+            broadcaster: PubSubBroadcasterConfig,
         ) -> Union[aiohttp.ClientResponse, Literal["retry", "refused", "ambiguous"]]:
             return await self._try_large_post_request(
                 broadcaster=broadcaster,
@@ -236,7 +236,7 @@ class HttpPubSubClientConnector:
         /,
         *,
         method: Literal["GET", "POST"],
-        broadcaster: HttpPubSubBroadcasterConfig,
+        broadcaster: PubSubBroadcasterConfig,
         headers: LooseHeaders,
         path: str,
         body: Optional[bytes],
@@ -281,7 +281,7 @@ class HttpPubSubClientConnector:
 
         async def broadcaster_callable(
             *,
-            broadcaster: HttpPubSubBroadcasterConfig,
+            broadcaster: PubSubBroadcasterConfig,
         ) -> Union[Literal["ambiguous", "retry", "refused"], bytes]:
             return await self._try_small_request(
                 method=method,
