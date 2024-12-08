@@ -215,6 +215,11 @@ make_http_pub_sub_config(
 
 Things not designed yet but need to be handled:
 
+- need a better name for the project, current ideas:
+
+  - swips: (silent while idle pubsub)
+  - tpps (tiered painless pub sub)
+
 - should be a way to request the server unsubscribe us from everything when initializing
   a client; requires either a listing endpoint from the server or a dedicated endpoint for
   this purpose. this will make us naturally recover from errors much nicer
