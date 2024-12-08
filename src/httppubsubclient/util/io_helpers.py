@@ -80,6 +80,9 @@ class PositionedSyncStandardIO(io.IOBase):
         raise OSError("not implemented")
 
     def read(self, n: int) -> bytes:
+        if n < 0:
+            n = len(self) - self.index
+
         amount_to_read = min(len(self) - self.index, n)
         if amount_to_read > 0:
             actually_read = self.stream.read(amount_to_read)
@@ -191,6 +194,9 @@ class PrefixedSyncStandardIO(io.IOBase):
         raise OSError("not implemented")
 
     def read(self, n: int) -> bytes:
+        if n < 0:
+            n = len(self) - self.index
+
         result = b""
 
         amount_to_read_from_prefix = min(len(self.prefix) - self.index, n)

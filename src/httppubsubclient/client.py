@@ -1,3 +1,4 @@
+from enum import Enum, auto
 import hashlib
 from io import BytesIO
 import os
@@ -80,11 +81,9 @@ if TYPE_CHECKING:
 class PubSubClientSubscriptionIterator:
     def __init__(
         self,
-        buffer: asyncio.Queue[PubSubClientMessageWithCleanup],
-        cleanup: asyncio.Queue[PubSubClientMessageWithCleanup],
+        state: "_PubSubClientSubscriptionStateEnteredBuffering",
     ) -> None:
-        self.buffer = buffer
-        self.cleanup = cleanup
+        self.state = state
 
     def __aiter__(self) -> "PubSubClientSubscriptionIterator":
         return self
@@ -93,18 +92,62 @@ class PubSubClientSubscriptionIterator:
         """Explicitly expects cancellation"""
         while True:
             try:
-                item_to_cleanup = self.cleanup.get_nowait()
+                item_to_cleanup = self.state.cleanup.get_nowait()
             except asyncio.QueueEmpty:
                 break
             await item_to_cleanup.cleanup()
 
-        result = await self.buffer.get()
-        try:
-            self.cleanup.put_nowait(result)
-        except asyncio.QueueFull:
-            await result.cleanup()
-            raise
-        return result
+        while True:
+            seen_lost = self.state.status == PubSubClientConnectionStatus.LOST
+            while True:
+                try:
+                    new_status = self.state.status_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    if self.state.status != PubSubClientConnectionStatus.LOST:
+                        break
+                    else:
+                        new_status = await self.state.status_queue.get()
+
+                seen_lost = seen_lost or new_status == PubSubClientConnectionStatus.LOST
+                self.state.status = new_status
+
+            if self.state.status == PubSubClientConnectionStatus.ABANDONED:
+                raise PubSubRequestConnectionAbandonedError("connection abandoned")
+
+            assert self.state.status == PubSubClientConnectionStatus.OK, "impossible"
+            if seen_lost and self.state.on_receiving is not None:
+                await self.state.on_receiving()
+
+            buffer_task = asyncio.create_task(self.state.buffer.get())
+            status_task = asyncio.create_task(self.state.status_queue.get())
+            try:
+                await asyncio.wait(
+                    [buffer_task, status_task], return_when=asyncio.FIRST_COMPLETED
+                )
+            except asyncio.CancelledError:
+                buffer_task.cancel()
+                status_task.cancel()
+                raise
+
+            if status_task.done():
+                new_status = status_task.result()
+                if not buffer_task.cancel():
+                    self.state.status = new_status
+                else:
+                    if new_status == PubSubClientConnectionStatus.ABANDONED:
+                        raise PubSubRequestConnectionAbandonedError(
+                            "connection abandoned"
+                        )
+                    self.state.status = new_status
+                    continue
+
+            result = buffer_task.result()
+            try:
+                self.state.cleanup.put_nowait(result)
+            except asyncio.QueueFull:
+                await result.cleanup()
+                raise
+            return result
 
 
 class PubSubClientSubscriptionWithTimeoutIterator:
@@ -151,6 +194,10 @@ _STATE_ENTERED_BUFFERING: Literal[3] = 3
 _STATE_DISPOSED: Literal[4] = 4
 
 
+class OnReceiving(Protocol):
+    async def __call__(self) -> None: ...
+
+
 @dataclass
 class _PubSubClientSubscriptionStateNotEntered:
     """State when the subscription has not yet been entered"""
@@ -166,6 +213,11 @@ class _PubSubClientSubscriptionStateNotEntered:
 
     glob: Set[str]
     """The glob topics that have been queued up to subscribe to when entered"""
+
+    on_receiving: Optional[OnReceiving]
+    """The function to call at the beginning of what we believe to be a continuous
+    stream of messages
+    """
 
 
 @dataclass
@@ -186,6 +238,11 @@ class _PubSubClientSubscriptionStateEnteredNotBuffering:
     glob: Dict[str, int]
     """The glob -> subscription id pairs we are subscribed to"""
 
+    on_receiving: Optional[OnReceiving]
+    """The function to call at the beginning of what we believe to be a continuous
+    stream of messages
+    """
+
 
 @dataclass
 class _PubSubClientSubscriptionStateEnteredBuffering:
@@ -201,6 +258,17 @@ class _PubSubClientSubscriptionStateEnteredBuffering:
 
     on_message_subscription_id: int
     """The registration id for the on_message callback"""
+
+    on_status_subscription_id: int
+    """The registration id for the connection status listeners"""
+
+    status: "PubSubClientConnectionStatus"
+    """The last connection status that we handled"""
+
+    status_queue: asyncio.Queue["PubSubClientConnectionStatus"]
+    """When the status changes we push the new status to this queue as we need
+    to process them in order.
+    """
 
     exact: Dict[bytes, int]
     """The topic -> subscription_id mapping for exact subscriptions. We care
@@ -227,6 +295,11 @@ class _PubSubClientSubscriptionStateEnteredBuffering:
     subscription is exited
     """
 
+    on_receiving: Optional[OnReceiving]
+    """The function to call at the beginning of what we believe to be a continuous
+    stream of messages
+    """
+
 
 @dataclass
 class _PubSubClientSubscriptionStateDisposed:
@@ -246,6 +319,44 @@ class PubSubClientSubscription:
     """Describes a subscription to one or more topic/globs within a single
     client. When the client exits it will exit all subscriptions, but exiting
     a subscription does not exit the client.
+
+    ## Usage
+
+    Using the http client or you don't care about missed notifications:
+
+    ```python
+    async with client.subscribe_exact(b"topic") as subscription:
+        async for message in await subscription.with_timeout(5):
+            if message is None:
+                print("still waiting")
+            print(f"received message: {message.data.read()}")
+    ```
+
+    Using the websocket client and you care about missed notifications:
+
+    ```python
+    async def on_receiving():
+        # reset your state here via polling. while you're doing this, any
+        # messages received will be buffered and then played after.
+        # usecases:
+        #  - if incoming messages bust the cache, bust the cache here in case you
+        #    missed a message to do so
+        #  - if you are maintaining state, set the current state here (make sure to
+        #    have some kind of counter in the log so you can discard messages already
+        #    incorporated later)
+        ...
+
+    async with client.subscribe_exact(
+        b"topic",
+        on_receiving=on_receiving
+    ) as subscription:
+        async for message in await subscription.with_timeout(5):
+            if message is None:
+                print("still waiting")
+            print(f"received message: {message.data.read()}")
+    ```
+
+    ## Details
 
     You can subscribe before aenter, which will queue up commands to be executed
     while aenter'ing. This facilitates generating methods for subscriptions that
@@ -325,11 +436,17 @@ class PubSubClientSubscription:
     """
 
     def __init__(
-        self, client: "PubSubClient", /, *, exact: Set[bytes], glob: Set[str]
+        self,
+        client: "PubSubClient",
+        /,
+        *,
+        exact: Set[bytes],
+        glob: Set[str],
+        on_receiving: Optional[OnReceiving],
     ) -> None:
         self.state: _PubSubClientSubscriptionState = (
             _PubSubClientSubscriptionStateNotEntered(
-                _STATE_NOT_ENTERED, client, exact, glob
+                _STATE_NOT_ENTERED, client, exact, glob, on_receiving
             )
         )
         self._state_lock: asyncio.Lock = asyncio.Lock()
@@ -370,6 +487,7 @@ class PubSubClientSubscription:
                 client=state.client,
                 exact=exact,
                 glob=glob,
+                on_receiving=state.on_receiving,
             )
 
         return self
@@ -394,6 +512,14 @@ class PubSubClientSubscription:
                 try:
                     await state.client.direct_unregister_on_message(
                         registration_id=state.on_message_subscription_id
+                    )
+                except BaseException as e:
+                    if exc is None:
+                        exc = e
+
+                try:
+                    await state.client.direct_unregister_status_handler(
+                        registration_id=state.on_status_subscription_id
                     )
                 except BaseException as e:
                     if exc is None:
@@ -440,6 +566,23 @@ class PubSubClientSubscription:
             self.state = _PubSubClientSubscriptionStateDisposed(_STATE_DISPOSED)
             if exc is not None:
                 raise exc
+
+    async def on_connection_lost(self) -> None:
+        async with self._state_lock:
+            if self.state.type == _STATE_ENTERED_BUFFERING:
+                self.state.status_queue.put_nowait(PubSubClientConnectionStatus.LOST)
+
+    async def on_connection_restored(self) -> None:
+        async with self._state_lock:
+            if self.state.type == _STATE_ENTERED_BUFFERING:
+                self.state.status_queue.put_nowait(PubSubClientConnectionStatus.OK)
+
+    async def on_connection_abandoned(self) -> None:
+        async with self._state_lock:
+            if self.state.type == _STATE_ENTERED_BUFFERING:
+                self.state.status_queue.put_nowait(
+                    PubSubClientConnectionStatus.ABANDONED
+                )
 
     async def subscribe_exact(self, topic: bytes) -> None:
         async with self._state_lock:
@@ -585,6 +728,12 @@ class PubSubClientSubscription:
                 raise RuntimeError("subscription has been disposed")
             assert state.type == _STATE_ENTERED_NOT_BUFFERING, "unknown state"
 
+            if (
+                state.client.receiver.connection_status
+                == PubSubClientConnectionStatus.ABANDONED
+            ):
+                raise PubSubRequestConnectionAbandonedError("connection abandoned")
+
             glob_list: List[str] = []
             glob_regexes: List[re.Pattern] = []
             for glob in state.glob.keys():
@@ -594,6 +743,14 @@ class PubSubClientSubscription:
             on_message_subscription_id = await state.client.direct_register_on_message(
                 receiver=self
             )
+            on_status_subscription_id = (
+                await state.client.direct_register_status_handler(receiver=self)
+            )
+
+            status = PubSubClientConnectionStatus.LOST
+            status_queue: asyncio.Queue[PubSubClientConnectionStatus] = asyncio.Queue()
+            if state.client.receiver.connection_status != status:
+                status_queue.put_nowait(state.client.receiver.connection_status)
 
             buffer: asyncio.Queue[PubSubClientMessageWithCleanup] = asyncio.Queue()
             cleanup: asyncio.Queue[PubSubClientMessageWithCleanup] = asyncio.Queue()
@@ -601,14 +758,18 @@ class PubSubClientSubscription:
                 type=_STATE_ENTERED_BUFFERING,
                 client=state.client,
                 on_message_subscription_id=on_message_subscription_id,
+                on_status_subscription_id=on_status_subscription_id,
+                status=status,
+                status_queue=status_queue,
                 exact=state.exact,
                 glob_regexes=glob_regexes,
                 glob_list=glob_list,
                 glob=state.glob,
                 buffer=buffer,
                 cleanup=cleanup,
+                on_receiving=state.on_receiving,
             )
-            return PubSubClientSubscriptionIterator(buffer, cleanup)
+            return PubSubClientSubscriptionIterator(self.state)
 
     async def with_timeout(
         self, seconds: float
@@ -620,6 +781,31 @@ class PubSubClientSubscription:
 
 class PubSubDirectOnMessageWithCleanupReceiver(Protocol):
     async def on_message(self, message: PubSubClientMessageWithCleanup) -> None: ...
+
+
+class PubSubDirectConnectionStatusReceiver(Protocol):
+    """Describes an object that wants to receive feedback about the state of the
+    connection, if any information is known. This mostly applies to websockets
+    which have active connection management.
+    """
+
+    async def on_connection_lost(self) -> None:
+        """Called to indicate that we know it's possible that we are missing
+        some notifications right now. After this is called, eventually either
+        on_connection_restored will be called or on_connection_abandoned will
+        be called and all future attempts to receive messages will result in
+        an error
+        """
+
+    async def on_connection_restored(self) -> None:
+        """Indicates we re-established a connection and now expect that we are
+        receiving messages without interruption.
+        """
+
+    async def on_connection_abandoned(self) -> None:
+        """Indicates we have given up trying to re-establish the connection and
+        will raise errors when trying to receive messages
+        """
 
 
 class PubSubError(Exception):
@@ -645,6 +831,12 @@ class PubSubRequestRetriesExhaustedError(PubSubRequestError):
 
 class PubSubRequestRefusedError(PubSubRequestError):
     """The server refused the request and indicated we should not retry"""
+
+
+class PubSubRequestConnectionAbandonedError(PubSubRequestError):
+    """We do not have a connection to the broadcaster and we have given up
+    trying to establish one
+    """
 
 
 class PubSubNotifyResult(Protocol):
@@ -749,8 +941,26 @@ class PubSubClientConnector(Protocol):
         """
 
 
+class PubSubClientConnectionStatus(Enum):
+    OK = auto()
+    """Indicates that we believe we are receiving messages"""
+
+    LOST = auto()
+    """Indicates that we believe we may not be receiving messages and are
+    trying to re-establish a stable connection
+    """
+
+    ABANDONED = auto()
+    """Indicates that we believe we may not be receiving messages and are
+    not making attempts to rectify the situation
+    """
+
+
 class PubSubClientReceiver(Protocol):
     """Something capable of registering additional callbacks when messages are received"""
+
+    @property
+    def connection_status(self) -> PubSubClientConnectionStatus: ...
 
     async def setup_receiver(self) -> None: ...
     async def teardown_receiver(self) -> None: ...
@@ -758,6 +968,10 @@ class PubSubClientReceiver(Protocol):
         self, /, *, receiver: PubSubDirectOnMessageWithCleanupReceiver
     ) -> int: ...
     async def unregister_on_message(self, /, *, registration_id: int) -> None: ...
+    async def register_status_handler(
+        self, /, *, receiver: PubSubDirectConnectionStatusReceiver
+    ) -> int: ...
+    async def unregister_status_handler(self, /, *, registration_id: int) -> None: ...
 
 
 class PubSubClient:
@@ -1120,10 +1334,53 @@ class PubSubClient:
             registration_id=registration_id
         )
 
-    def subscribe_multi(self) -> PubSubClientSubscription:
+    async def direct_register_status_handler(
+        self, /, *, receiver: PubSubDirectConnectionStatusReceiver
+    ) -> int:
+        """Registers the given callback to be invoked whenever we receive a connection
+        status update. Returns a registration id that must be provided to
+        `direct_unregister_status_handler` when the caller is no longer interested in
+        the messages.
+
+        WARN:
+            the subscribe* methods will handle registering a status handler for you
+            while also checking the state of the connection, and thus should be preferred
+        """
+        assert self._entered, "not entered"
+        return await self.receiver.register_status_handler(receiver=receiver)
+
+    async def direct_unregister_status_handler(
+        self, /, *, registration_id: int
+    ) -> None:
+        """If the registration id was returned from `direct_register_status_handler`, and
+        it has not already been unregistered via this method, then unregister the
+        callback. If the registration id is not as indicated, the behavior is undefined:
+        - it may do nothing
+        - it may raise an error
+        - it may unregister an unrelated callback
+        - it may corrupt the state of the client
+
+        WARN:
+            prefer using the `subscribe*` methods instead, which will handle
+            unsubscribing via an async context manager. otherwise, cleanup is
+            both tedious and error-prone
+        """
+        assert self._entered, "not entered"
+        return await self.receiver.unregister_status_handler(
+            registration_id=registration_id
+        )
+
+    def subscribe_multi(
+        self, *, on_receiving: Optional[OnReceiving] = None
+    ) -> PubSubClientSubscription:
         """Returns a new async context manager within which you can
         register multiple subscriptions (exact or glob). When exiting,
         the subscriptions will be removed.
+
+        If `on_receiving` is provided, it will be called after any period where
+        we may not have been receiving messages and we are likely now receiving
+        messages, after buffering begins. This is always called at least once when
+        making the iterator (assuming no errors).
 
         Re-entrant subscriptions are supported and avoid duplicate subscribe/
         unsubscribe requests to the broadcaster
@@ -1132,29 +1389,49 @@ class PubSubClient:
         a bit of setup in advance.
         """
         assert self._entered, "not entered"
-        return PubSubClientSubscription(self, exact=set(), glob=set())
+        return PubSubClientSubscription(
+            self, exact=set(), glob=set(), on_receiving=on_receiving
+        )
 
-    def subscribe_exact(self, topic: bytes, *rest: bytes) -> PubSubClientSubscription:
+    def subscribe_exact(
+        self, topic: bytes, *rest: bytes, on_receiving: Optional[OnReceiving] = None
+    ) -> PubSubClientSubscription:
         """Subscribe to one or more topics by exact match. The result is an
         async context manager which, when exited, will unsubscribe from the
         topic(s)
 
+        If `on_receiving` is provided, it will be called after any period where
+        we may not have been receiving messages and we are likely now receiving
+        messages, after buffering begins. This is always called at least once when
+        making the iterator (assuming no errors).
+
         Re-entrant subscriptions are supported and avoid duplicate subscribe/
         unsubscribe requests to the broadcaster
         """
         assert self._entered, "not entered"
-        return PubSubClientSubscription(self, exact={topic, *rest}, glob=set())
+        return PubSubClientSubscription(
+            self, exact={topic, *rest}, glob=set(), on_receiving=on_receiving
+        )
 
-    def subscribe_glob(self, glob: str, *rest: str) -> PubSubClientSubscription:
+    def subscribe_glob(
+        self, glob: str, *rest: str, on_receiving: Optional[OnReceiving] = None
+    ) -> PubSubClientSubscription:
         """Subscribe to one or more topics by glob match. The result is an
         async context manager which, when exited, will unsubscribe from the
         topic(s)
 
+        If `on_receiving` is provided, it will be called after any period where
+        we may not have been receiving messages and we are likely now receiving
+        messages, after buffering begins. This is always called at least once when
+        making the iterator (assuming no errors).
+
         Re-entrant subscriptions are supported and avoid duplicate subscribe/
         unsubscribe requests to the broadcaster
         """
         assert self._entered, "not entered"
-        return PubSubClientSubscription(self, exact=set(), glob={glob, *rest})
+        return PubSubClientSubscription(
+            self, exact=set(), glob={glob, *rest}, on_receiving=on_receiving
+        )
 
     def subscribe(
         self,
@@ -1162,17 +1439,26 @@ class PubSubClient:
         *,
         glob: Optional[Iterable[str]] = None,
         exact: Optional[Iterable[bytes]] = None,
+        on_receiving: Optional[OnReceiving] = None,
     ) -> PubSubClientSubscription:
         """Subscribe to a combination of glob and/or exact topics. The result is
         an async context manager which, when exited, will unsubscribe from the
         topic(s)
+
+        If `on_receiving` is provided, it will be called after any period where
+        we may not have been receiving messages and we are likely now receiving
+        messages, after buffering begins. This is always called at least once when
+        making the iterator (assuming no errors).
 
         Re-entrant subscriptions are supported and avoid duplicate subscribe/
         unsubscribe requests to the broadcaster
         """
         assert self._entered, "not entered"
         return PubSubClientSubscription(
-            self, exact=set(exact or ()), glob=set(glob or ())
+            self,
+            exact=set(exact or ()),
+            glob=set(glob or ()),
+            on_receiving=on_receiving,
         )
 
     @overload

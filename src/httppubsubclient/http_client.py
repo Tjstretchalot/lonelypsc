@@ -26,9 +26,11 @@ from fastapi.requests import Request
 from fastapi.responses import Response
 from httppubsubclient.client import (
     PubSubClient,
+    PubSubClientConnectionStatus,
     PubSubClientConnector,
     PubSubClientMessageWithCleanup,
     PubSubClientReceiver,
+    PubSubDirectConnectionStatusReceiver,
     PubSubDirectOnMessageWithCleanupReceiver,
     PubSubRequestAmbiguousError,
     PubSubRequestRefusedError,
@@ -513,6 +515,9 @@ class HttpPubSubClientReceiver:
         self.handlers: List[Tuple[int, PubSubDirectOnMessageWithCleanupReceiver]] = []
         """The registered on_message receivers"""
         self.bind_task: Optional[asyncio.Task] = None
+        self.connection_status = PubSubClientConnectionStatus.OK
+        self._status_counter = 0
+        """Ensures we can give unique status handler ids"""
 
     async def setup_receiver(self) -> None:
         assert self.bind_task is None, "already setup & not re-entrant"
@@ -684,6 +689,17 @@ class HttpPubSubClientReceiver:
                 self.handlers.pop(idx)
                 return
             idx -= 1
+
+    async def register_status_handler(
+        self, /, *, receiver: PubSubDirectConnectionStatusReceiver
+    ) -> int:
+        # we do not attempt to verify connection status over http
+        self._status_counter += 1
+        return self._status_counter
+
+    async def unregister_status_handler(self, /, *, registration_id: int) -> None:
+        # we do not attempt to verify connection status over http
+        ...
 
 
 if TYPE_CHECKING:
