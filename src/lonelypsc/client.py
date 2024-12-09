@@ -129,16 +129,10 @@ class PubSubClientSubscriptionIterator:
                 status_task.cancel()
                 raise
 
-            if status_task.done():
-                new_status = status_task.result()
-                if not buffer_task.cancel():
-                    self.state.status = new_status
-                else:
-                    if new_status == PubSubClientConnectionStatus.ABANDONED:
-                        raise PubSubRequestConnectionAbandonedError(
-                            "connection abandoned"
-                        )
-                    self.state.status = new_status
+            if not status_task.cancel():
+                canceled_buffer_task = buffer_task.cancel()
+                self.state.status = status_task.result()
+                if canceled_buffer_task:
                     continue
 
             result = buffer_task.result()
