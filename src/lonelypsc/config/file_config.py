@@ -1,17 +1,17 @@
 import json
 from typing import Literal, Optional, Tuple, cast
 
-from httppubsubclient.config.auth_config import IncomingAuthConfig, OutgoingAuthConfig
-from httppubsubclient.config.helpers.hmac_auth_config import (
+from lonelypsc.config.auth_config import IncomingAuthConfig, OutgoingAuthConfig
+from lonelypsc.config.helpers.hmac_auth_config import (
     IncomingHmacAuth,
     IncomingHmacAuthSqliteDBConfig,
     OutgoingHmacAuth,
 )
-from httppubsubclient.config.helpers.none_auth_config import (
+from lonelypsc.config.helpers.none_auth_config import (
     IncomingNoneAuth,
     OutgoingNoneAuth,
 )
-from httppubsubclient.config.helpers.token_auth_config import (
+from lonelypsc.config.helpers.token_auth_config import (
     IncomingTokenAuth,
     OutgoingTokenAuth,
 )

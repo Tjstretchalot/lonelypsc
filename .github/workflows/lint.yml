@@ -13,7 +13,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python_version }}
-      - name: Fetch httppubsubclient
+      - name: Fetch lonelypsc
         uses: actions/checkout@v4
       - name: Generic python setup
         run: |
@@ -21,10 +21,10 @@ jobs:
       - name: Installing dependencies
         run: |
           python -m pip install -r requirements.txt
-      - name: Lint httppubsubclient with black
+      - name: Lint lonelypsc with black
         run: |
-          python -m black --check src/httppubsubclient
-      - name: Type check httppubsubclient with mypy
+          python -m black --check src/lonelypsc
+      - name: Type check lonelypsc with mypy
         working-directory: src
         run: |
-          mypy httppubsubclient --explicit-package-bases --disallow-untyped-defs
+          mypy lonelypsc --explicit-package-bases --disallow-untyped-defs

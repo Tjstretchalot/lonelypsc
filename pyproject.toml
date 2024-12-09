@@ -1,5 +1,5 @@
 [project]
-name = "httppubsubclient"
+name = "lonelypsc"
 version = "0.0.1"
 description = "PubSub over HTTP (subscriber side)"
 authors = [

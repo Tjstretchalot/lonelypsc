@@ -24,7 +24,7 @@ from typing import (
 from fastapi import APIRouter, Header
 from fastapi.requests import Request
 from fastapi.responses import Response
-from httppubsubclient.client import (
+from lonelypsc.client import (
     PubSubClient,
     PubSubClientConnectionStatus,
     PubSubClientConnector,
@@ -37,15 +37,15 @@ from httppubsubclient.client import (
     PubSubRequestRetriesExhaustedError,
     PubSubNotifyResult,
 )
-from httppubsubclient.config.config import PubSubBroadcasterConfig
-from httppubsubclient.config.http_config import HttpPubSubConfig
+from lonelypsc.config.config import PubSubBroadcasterConfig
+from lonelypsc.config.http_config import HttpPubSubConfig
 import aiohttp
 from aiohttp.typedefs import LooseHeaders
 import random
 
-from httppubsubclient.config.helpers.uvicorn_bind_config import handle_bind_with_uvicorn
-from httppubsubclient.types.sync_io import SyncStandardIO
-from httppubsubclient.util.io_helpers import (
+from lonelypsc.config.helpers.uvicorn_bind_config import handle_bind_with_uvicorn
+from lonelypsc.types.sync_io import SyncStandardIO
+from lonelypsc.util.io_helpers import (
     PositionedSyncStandardIO,
     PrefixedSyncStandardIO,
 )

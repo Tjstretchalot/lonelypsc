@@ -1,7 +1,7 @@
 import io
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Iterator, Optional, Type
-from httppubsubclient.types.sync_io import (
+from lonelypsc.types.sync_io import (
     SyncStandardWithLengthIO,
     SyncStandardIO,
 )

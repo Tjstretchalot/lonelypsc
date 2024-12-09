@@ -1,7 +1,7 @@
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Protocol, Type
 
-from httppubsubclient.config.auth_config import AuthConfig
-from httppubsubclient.config.config import PubSubBroadcasterConfig
+from lonelypsc.config.auth_config import AuthConfig
+from lonelypsc.config.config import PubSubBroadcasterConfig
 
 try:
     import zstandard

@@ -18,7 +18,7 @@ from typing import (
     overload,
     TYPE_CHECKING,
 )
-from httppubsubclient.types.sync_io import (
+from lonelypsc.types.sync_io import (
     SyncReadableBytesIO,
     SyncStandardIO,
 )
@@ -26,7 +26,7 @@ from dataclasses import dataclass
 import asyncio
 import re
 
-from httppubsubclient.util.io_helpers import PositionedSyncStandardIO
+from lonelypsc.util.io_helpers import PositionedSyncStandardIO
 
 try:
     from glob import translate as _glob_translate  # type: ignore
@@ -392,7 +392,7 @@ class PubSubClientSubscription:
         async for message in await subscription.messages():  # starts buffering
             break
 
-        # still buffering! furthermore, httppubsubclient doesn't
+        # still buffering! furthermore, lonelypsc doesn't
         # know if the other iter is still going or not! thus,
         # this is ambiguous!
         async for message in await subscription.messages():  # ERROR

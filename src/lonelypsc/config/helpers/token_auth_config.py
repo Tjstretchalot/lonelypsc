@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING, Literal, Optional, Type
 
-from httppubsubclient.config.auth_config import IncomingAuthConfig, OutgoingAuthConfig
+from lonelypsc.config.auth_config import IncomingAuthConfig, OutgoingAuthConfig
 import hmac
 
 

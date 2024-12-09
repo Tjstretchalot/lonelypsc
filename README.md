@@ -1,4 +1,4 @@
-# httppubsubclient
+# lonelypsc
 
 ## PROJECT STAGE - PLANNING
 
@@ -8,8 +8,8 @@ repository to be notified when it reaches the next stage!
 
 ## Overview
 
-This is the client library for [httppubsubserver](https://github.com/Tjstretchalot/httppubsubserver).
-For more details on when and why you would use httppubsub, as well as
+This is the client library for [lonelypss](https://github.com/Tjstretchalot/lonelypss).
+For more details on when and why you would use lonelyps, as well as
 the terminology, see the server repository.
 
 ## Installation
@@ -18,7 +18,7 @@ the terminology, see the server repository.
 python -m venv venv
 source venv/bin/activate
 python -m pip install -U pip
-pip install httppubsubclient
+pip install lonelypsc
 pip freeze > requirements.txt
 ```
 
@@ -38,10 +38,10 @@ This client exposes a FastAPI APIRouter that you can bind however you want and
 a default flow that uses uvicorn to run an ASGI app based on that router.
 
 ```python
-from httppubsubclient.http_client import HttpPubSubClient
-from httppubsubclient.config.config import HttpPubSubConfig, make_http_pub_sub_config
-from httppubsubclient.config.auth_config import AuthConfigFromParts
-from httppubsubclient.config.file_config import get_auth_config_from_file
+from lonelypsc.http_client import HttpPubSubClient
+from lonelypsc.config.config import HttpPubSubConfig, make_http_pub_sub_config
+from lonelypsc.config.auth_config import AuthConfigFromParts
+from lonelypsc.config.file_config import get_auth_config_from_file
 import json
 import os
 
@@ -201,7 +201,7 @@ set your bind config to a no-op, e.g.,
 
 ```python
 from fastapi import APIRouter
-from httppubsubclient.config.config import make_http_pub_sub_config
+from lonelypsc.config.config import make_http_pub_sub_config
 
 async def _noop_callback(router: APIRouter) -> None: ...
 

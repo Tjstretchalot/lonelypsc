@@ -6,8 +6,8 @@ from typing import Dict, Literal, Optional, Protocol, Type, Union
 
 import aiohttp
 
-from httppubsubclient.config.config import PubSubBroadcasterConfig
-from httppubsubclient.config.ws_config import WebsocketPubSubConfig
+from lonelypsc.config.config import PubSubBroadcasterConfig
+from lonelypsc.config.ws_config import WebsocketPubSubConfig
 
 try:
     import zstandard
@@ -233,6 +233,7 @@ async def _progress_initializing(
     assert state.type == PubSubWebsocketState.INITIALIZING
 
     compressors: Dict[int, _Compressor] = {}
+    raise NotImplementedError
 
 
 async def _progress_ready(

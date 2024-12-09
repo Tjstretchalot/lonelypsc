@@ -7,7 +7,7 @@ import sqlite3
 import time
 from typing import TYPE_CHECKING, Literal, Optional, Protocol, Tuple, Type, Union, cast
 
-from httppubsubclient.config.auth_config import IncomingAuthConfig, OutgoingAuthConfig
+from lonelypsc.config.auth_config import IncomingAuthConfig, OutgoingAuthConfig
 
 
 class IncomingHmacAuthDBConfig(Protocol):

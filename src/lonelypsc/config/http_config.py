@@ -11,8 +11,8 @@ from typing import (
 
 from fastapi import APIRouter
 
-from httppubsubclient.config.auth_config import AuthConfig
-from httppubsubclient.config.config import PubSubBroadcasterConfig
+from lonelypsc.config.auth_config import AuthConfig
+from lonelypsc.config.config import PubSubBroadcasterConfig
 
 
 class HttpPubSubBindUvicornConfig(TypedDict):
@@ -23,7 +23,7 @@ class HttpPubSubBindUvicornConfig(TypedDict):
     use `HttpPubSubBindManualConfig` instead.
 
     Note - this is just converted into a manual config via the module
-    `httppubsubclient.config.helpers.uvicorn_bind_config`
+    `lonelypsc.config.helpers.uvicorn_bind_config`
     """
 
     type: Literal["uvicorn"]
@@ -78,7 +78,7 @@ class HttpPubSubBindConfig(Protocol):
         This CAN include a path component, which is assumed to be a prefix for
         the standard routes, and a fragment, which is kept (but potentially
         appended to) for our subscriptions. When using multiple
-        httppubsubclients at the same schema and adddress they need to be
+        lonelypscs at the same schema and adddress they need to be
         distinguished either by path or fragment
 
         WARN:

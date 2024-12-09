@@ -1,6 +1,6 @@
 from fastapi import FastAPI, APIRouter
 
-from httppubsubclient.config.http_config import (
+from lonelypsc.config.http_config import (
     HttpPubSubBindManualConfig,
     HttpPubSubBindUvicornConfig,
 )
