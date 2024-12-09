@@ -10,8 +10,8 @@ class PubSubBroadcasterConfig(TypedDict):
     host: str
     """The host of the broadcaster, e.g., `http://localhost:3003`. Must include
     the schema and port (if not default) and may include a path (if prefixing the
-    standard paths), such that f'{host}/v1/subscribe' is the full path to subscribe
-    endpoint.
+    standard paths), such that f'{host}/v1/subscribe/exact' is the full path to 
+    subscribe exact endpoint.
 
     For websocket clients, the schema must be a ws or wss. For http clients,
     the schema must be http or https.

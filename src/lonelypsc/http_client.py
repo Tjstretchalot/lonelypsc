@@ -338,14 +338,13 @@ class HttpPubSubClientConnector:
         body = io.BytesIO()
         body.write(len(encoded_receive_url).to_bytes(2, "big", signed=False))
         body.write(encoded_receive_url)
-        body.write(b"\x00")
         body.write(len(topic).to_bytes(2, "big", signed=False))
         body.write(topic)
 
         result = await self._make_small_request(
             method="POST",
             headers=headers,
-            path="/v1/subscribe",
+            path="/v1/subscribe/exact",
             body=body.getvalue(),
             special_ok_codes={409},
         )
@@ -371,14 +370,13 @@ class HttpPubSubClientConnector:
         body = io.BytesIO()
         body.write(len(encoded_receive_url).to_bytes(2, "big", signed=False))
         body.write(encoded_receive_url)
-        body.write(b"\x01")
         body.write(len(encoded_glob).to_bytes(2, "big", signed=False))
         body.write(encoded_glob)
 
         result = await self._make_small_request(
             method="POST",
             headers=headers,
-            path="/v1/subscribe",
+            path="/v1/subscribe/glob",
             body=body.getvalue(),
             special_ok_codes={409},
         )
@@ -403,14 +401,13 @@ class HttpPubSubClientConnector:
         body = io.BytesIO()
         body.write(len(encoded_receive_url).to_bytes(2, "big", signed=False))
         body.write(encoded_receive_url)
-        body.write(b"\x00")
         body.write(len(topic).to_bytes(2, "big", signed=False))
         body.write(topic)
 
         result = await self._make_small_request(
             method="POST",
             headers=headers,
-            path="/v1/unsubscribe",
+            path="/v1/unsubscribe/exact",
             body=body.getvalue(),
             special_ok_codes={409},
         )
@@ -436,14 +433,13 @@ class HttpPubSubClientConnector:
         body = io.BytesIO()
         body.write(len(encoded_receive_url).to_bytes(2, "big", signed=False))
         body.write(encoded_receive_url)
-        body.write(b"\x01")
         body.write(len(encoded_glob).to_bytes(2, "big", signed=False))
         body.write(encoded_glob)
 
         result = await self._make_small_request(
             method="POST",
             headers=headers,
-            path="/v1/unsubscribe",
+            path="/v1/unsubscribe/glob",
             body=body.getvalue(),
             special_ok_codes={409},
         )
