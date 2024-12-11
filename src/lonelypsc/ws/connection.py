@@ -232,7 +232,7 @@ async def _progress_initializing(
 ) -> _PubSubWebsocketState:
     assert state.type == PubSubWebsocketState.INITIALIZING
 
-    compressors: Dict[int, _Compressor] = {}
+    # compressors: Dict[int, _Compressor] = {}
     raise NotImplementedError
 
 
