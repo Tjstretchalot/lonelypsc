@@ -218,3 +218,8 @@ Things not designed yet but need to be handled:
 - should be a way to request the server unsubscribe us from everything when initializing
   a client; requires either a listing endpoint from the server or a dedicated endpoint for
   this purpose. this will make us naturally recover from errors much nicer
+
+- there should be an authorization component to both CONFIGURE and CONFIRM_CONFIGURE on the
+  websocket protocol, which will allow users of the library to decide to skip the other
+  authorization handshakes within the websocket if there is another way to confirm the packets
+  are from the same sender (i.e., TLS), plus making certain DoS attacks more difficult

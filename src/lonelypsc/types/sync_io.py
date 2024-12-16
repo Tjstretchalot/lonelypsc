@@ -81,6 +81,45 @@ SyncStandardWithLengthIO = Union[SyncStandardWithLengthIOA, SyncStandardWithLeng
 but is used to represent a stream where the length is known in advance
 """
 
+
+class SyncWritableBytesIO(Protocol):
+    """A type that represents a stream that can be written synchronously"""
+
+    def write(self, b: Union[bytes, bytearray], /) -> int:
+        """Writes the given bytes to the file-like object"""
+        raise NotImplementedError()
+
+
+class Closeable(Protocol):
+    """Represents something that can be closed"""
+
+    def close(self) -> None:
+        """Closes the file-like object"""
+
+
+class SyncIOBaseLikeIOA(
+    SyncReadableBytesIOA,
+    SyncTellableBytesIO,
+    SyncSeekableBytesIO,
+    SyncWritableBytesIO,
+    Closeable,
+    Protocol,
+): ...
+
+
+class SyncIOBaseLikeIOB(
+    SyncReadableBytesIOB,
+    SyncTellableBytesIO,
+    SyncSeekableBytesIO,
+    SyncWritableBytesIO,
+    Closeable,
+    Protocol,
+): ...
+
+
+SyncIOBaseLikeIO = Union[SyncIOBaseLikeIOA, SyncIOBaseLikeIOB]
+"""For when you want to use RawIOBase but it's not a protocol"""
+
 if TYPE_CHECKING:
     # verifies BytesIO matches
     _a: Type[SyncReadableBytesIO] = BytesIO

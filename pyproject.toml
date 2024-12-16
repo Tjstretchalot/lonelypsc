@@ -21,7 +21,8 @@ classifiers = [
 dependencies = [
     "fastapi>=0.115",
     "aiohttp>=3.11",
-    "uvicorn>=0.32"
+    "uvicorn>=0.32",
+    "lonelypsp>=0.0.7"
 ]
 
 
