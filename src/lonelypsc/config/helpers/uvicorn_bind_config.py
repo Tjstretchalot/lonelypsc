@@ -1,10 +1,10 @@
-from fastapi import FastAPI, APIRouter
+import uvicorn
+from fastapi import APIRouter, FastAPI
 
 from lonelypsc.config.http_config import (
     HttpPubSubBindManualConfig,
     HttpPubSubBindUvicornConfig,
 )
-import uvicorn
 
 
 class BindWithUvicornCallback:

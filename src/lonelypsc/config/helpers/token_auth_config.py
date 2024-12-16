@@ -1,7 +1,7 @@
+import hmac
 from typing import TYPE_CHECKING, Literal, Optional, Type
 
 from lonelypsc.config.auth_config import IncomingAuthConfig, OutgoingAuthConfig
-import hmac
 
 
 class IncomingTokenAuth:

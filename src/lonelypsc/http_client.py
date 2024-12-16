@@ -1,11 +1,12 @@
 import asyncio
 import base64
-from dataclasses import dataclass
 import hashlib
 import io
 import json
+import random
 import tempfile
 import time
+from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -21,9 +22,12 @@ from typing import (
     Union,
 )
 
+import aiohttp
+from aiohttp.typedefs import LooseHeaders
 from fastapi import APIRouter, Header
 from fastapi.requests import Request
 from fastapi.responses import Response
+
 from lonelypsc.client import (
     PubSubClient,
     PubSubClientConnectionStatus,
@@ -32,24 +36,19 @@ from lonelypsc.client import (
     PubSubClientReceiver,
     PubSubDirectConnectionStatusReceiver,
     PubSubDirectOnMessageWithCleanupReceiver,
+    PubSubNotifyResult,
     PubSubRequestAmbiguousError,
     PubSubRequestRefusedError,
     PubSubRequestRetriesExhaustedError,
-    PubSubNotifyResult,
 )
-from lonelypsc.config.config import PubSubBroadcasterConfig
-from lonelypsc.config.http_config import HttpPubSubConfig
-import aiohttp
-from aiohttp.typedefs import LooseHeaders
-import random
-
+from lonelypsc.config.config import BroadcastersShuffler, PubSubBroadcasterConfig
 from lonelypsc.config.helpers.uvicorn_bind_config import handle_bind_with_uvicorn
+from lonelypsc.config.http_config import HttpPubSubConfig
 from lonelypsc.types.sync_io import SyncStandardIO
 from lonelypsc.util.io_helpers import (
     PositionedSyncStandardIO,
     PrefixedSyncStandardIO,
 )
-
 
 # We can return T, or a subset of T
 T_co = TypeVar("T_co", covariant=True)
@@ -80,6 +79,9 @@ class HttpPubSubClientConnector:
         self._session: Optional[aiohttp.ClientSession] = None
         """The client session to use for making requests, if entered, otherwise None"""
 
+        self._shuffler: Optional[BroadcastersShuffler] = None
+        """The shuffler for the broadcasters list, if entered, otherwise None"""
+
     async def setup_connector(self) -> None:
         assert self._session is None, "already set up"
         sess = aiohttp.ClientSession(
@@ -94,11 +96,13 @@ class HttpPubSubClientConnector:
         )
         await sess.__aenter__()
         self._session = sess
+        self._shuffler = BroadcastersShuffler(self.config.broadcasters)
 
     async def teardown_connector(self) -> None:
         assert self._session is not None, "not set up"
         sess = self._session
         self._session = None
+        self._shuffler = None
         await sess.__aexit__(None, None, None)
         return None
 
@@ -156,47 +160,29 @@ class HttpPubSubClientConnector:
         else to indicate success.
         """
         assert self._session is not None, "not set up"
-
-        start_idx = random.randint(0, len(self.config.broadcasters) - 1)
-        start_broadcaster = self.config.broadcasters[start_idx]
-
-        result = await broadcaster_callable(broadcaster=start_broadcaster)
-        if result != "ambiguous" and result != "retry":
-            return result
-        if result == "ambiguous" and not self.config.outgoing_retry_ambiguous:
-            return result
+        assert self._shuffler is not None, "not set up"
 
         # this could be a boolean, but doing it this way helps static
         # analysis understand we don't return ambiguous unless T is a superset
         # of Literal["ambiguous"]
         seen_ambiguous: Optional[T] = None
-        if result == "ambiguous":
-            seen_ambiguous = result
 
-        iteration = 0
-        remaining = list(self.config.broadcasters)
-        remaining.pop(start_idx)
-        random.shuffle(remaining)
-
-        while True:
-            if not remaining:
-                iteration += 1
-                if iteration >= self.config.outgoing_retries_per_broadcaster:
-                    if seen_ambiguous is not None:
-                        return seen_ambiguous
-                    return result
-                remaining = list(self.config.broadcasters)
-                random.shuffle(remaining)
+        for iteration in range(self.config.outgoing_retries_per_broadcaster):
+            if iteration > 0:
                 await asyncio.sleep(2 ** (iteration - 1) + random.random())
 
-            broadcaster = remaining.pop()
-            result = await broadcaster_callable(broadcaster=broadcaster)
-            if result != "ambiguous" and result != "retry":
-                return result
-            if result == "ambiguous" and not self.config.outgoing_retry_ambiguous:
-                return result
-            if result == "ambiguous":
-                seen_ambiguous = result
+            for broadcaster in self._shuffler:
+                result = await broadcaster_callable(broadcaster=broadcaster)
+                if result != "ambiguous" and result != "retry":
+                    return result
+                if result == "ambiguous" and not self.config.outgoing_retry_ambiguous:
+                    return result
+                if result == "ambiguous":
+                    seen_ambiguous = result
+
+        if seen_ambiguous is not None:
+            return seen_ambiguous
+        return result
 
     async def _make_large_post_request(
         self, /, *, path: str, headers: LooseHeaders, body: SyncStandardIO

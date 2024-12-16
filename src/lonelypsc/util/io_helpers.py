@@ -1,11 +1,12 @@
 import io
+import os
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Iterator, Optional, Type
+
 from lonelypsc.types.sync_io import (
-    SyncStandardWithLengthIO,
     SyncStandardIO,
+    SyncStandardWithLengthIO,
 )
-import os
 
 
 class PositionedSyncStandardIO(io.IOBase):

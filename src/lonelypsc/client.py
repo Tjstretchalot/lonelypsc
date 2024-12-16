@@ -1,9 +1,13 @@
-from enum import Enum, auto
+import asyncio
 import hashlib
-from io import BytesIO
 import os
+import re
+from dataclasses import dataclass
+from enum import Enum, auto
+from io import BytesIO
 from types import TracebackType
 from typing import (
+    TYPE_CHECKING,
     Awaitable,
     Callable,
     Dict,
@@ -16,16 +20,12 @@ from typing import (
     Type,
     Union,
     overload,
-    TYPE_CHECKING,
 )
+
 from lonelypsc.types.sync_io import (
     SyncReadableBytesIO,
     SyncStandardIO,
 )
-from dataclasses import dataclass
-import asyncio
-import re
-
 from lonelypsc.util.io_helpers import PositionedSyncStandardIO
 
 try:

@@ -1,4 +1,5 @@
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Protocol, Type
+import asyncio
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Protocol, Tuple, Type
 
 from lonelypsc.config.auth_config import AuthConfig
 from lonelypsc.config.config import PubSubBroadcasterConfig
@@ -83,13 +84,13 @@ class WebsocketGenericConfig(Protocol):
     @property
     def websocket_close_timeout(self) -> Optional[float]:
         """The maximum amount of time to wait after trying to close the websocket
-        connection for the acknowledgement from the server
+        connection for the acknowledgement from the broadcaster
         """
 
     @property
     def websocket_heartbeat_interval(self) -> float:
         """The interval in seconds between sending websocket ping frames to the
-        server. A lower value causes more overhead but more quickly detects
+        broadcaster. A lower value causes more overhead but more quickly detects
         connection issues.
         """
 
@@ -122,7 +123,7 @@ class WebsocketCompressionConfig(Protocol):
         """
 
     async def get_compression_dictionary_by_id(
-        self, dictionary_id: int, /
+        self, dictionary_id: int, /, *, level: int
     ) -> "Optional[zstandard.ZstdCompressionDict]":
         """If a precomputed zstandard compression dictionary is available with the
         given id, the corresponding dictionary should be returned. Presets must
@@ -130,36 +131,61 @@ class WebsocketCompressionConfig(Protocol):
         provide meaningful compression on small messages (where a compression dict
         is too large to send alongside the message) when using short-lived websockets
         (where there isn't enough time to train a dictionary)
+
+        The provided compression level is the hint returned from the broadcaster,
+        to avoid having to duplicate that configuration here. The returned dict
+        should have its data precomputed as if by `precompute_compress`
         """
 
     @property
     def allow_training_compression(self) -> bool:
-        """True to allow the server to train a custom zstandard dict on the small
+        """True to allow the broadcaster to train a custom zstandard dict on the small
         payloads that we receive or send over the websocket connection, then
         send us that custom dictionary so we can reuse it for better
         compression.
 
-        The server may be configured differently, but typically they will train
+        The broadcaster may be configured differently, but typically it will train
         on messages between 32 and 16384 bytes, which is large enough that
         compression with a pre-trained dictionary may help, but small enough
         that the the overhead of providing a dictionary alongside each message
         would overwhelm the benefits of compression.
 
-        Generally you should enable this if you expect to send/receive enough
+        Generally the subscriber should enable this if it expects to send/receive enough
         relevant messages to reach the training thresholds (usually 100kb to 1mb
         of relevant messages), plus enough to make the training overhead worth
-        it (typically another 10mb or so). You should disable this if you won't
-        send relevant messages or you plan on disconnecting before you send/receive
-        enough for it to be useful.
+        it (typically another 10mb or so). The subscriber should disable this if it won't
+        send relevant messages or it expects to disconnect before sending/receiving
+        enough data for the training to complete or the savings to compensate for
+        the work spent building the dictionary.
 
-        You should also disable this if you know the message payloads will not be
+        The subscriber should also disable this if the message payloads will not be
         meaningfully compressible, e.g., significant parts are random or encrypted data.
-        Generally, for encryption, prefer to use a TLS connection so you can still benefit
-        from this compression.
+        Generally, for encryption, TLS should be used so that compression can still
+        occur on the unencrypted payload (i.e., raw -> compressed -> encrypted).
 
-        The automatically trained compression means you can generally ignore
-        overhead from e.g. field names/whitespace/separators as they will be
-        compressed away. To get the most benefit, use sorted keys
+        The automatically trained compression will generally convert a simple
+        protocol design, such as json with long key names and extra wrappers for
+        extensibility, into the same order of magnitude network size as a more
+        compact protocol
+        """
+
+    @property
+    def decompression_max_window_size(self) -> int:
+        """
+        Sets an upper limit on the window size for decompression operations
+        in kibibytes. This setting can be used to prevent large memory
+        allocations for inputs using large compression windows.
+
+        Use 0 for no limit.
+
+        A reasonable value is 0 for no limit. Alternatively, it should be 8mb if
+        trying to match the zstandard minimum decoder requirements. The
+        remaining alternative would be as high as the subscriber can bear
+
+        WARN:
+            This should not be considered a security measure. Authorization
+            is already passed prior to decompression, and if that is not enough
+            to eliminate adversarial payloads, then disable compression.
         """
 
 
@@ -171,17 +197,38 @@ class WebsocketCompressionConfigFromParts:
     def __init__(
         self,
         allow_compression: bool,
-        compression_dictionary_by_id: "Dict[int, zstandard.ZstdCompressionDict]",
+        compression_dictionary_by_id: "Dict[int, List[Tuple[int, zstandard.ZstdCompressionDict]]]",
         allow_training_compression: bool,
+        decompression_max_window_size: int,
     ):
         self.allow_compression = allow_compression
         self.compression_dictionary_by_id = compression_dictionary_by_id
+        """
+        Maps from dictionary id to a sorted list of (level, precomputed dictionary). You should
+        initialize this with a guess for what level the broadcaster will suggest for compression,
+        typically 10, and this will automatically fill in remaining levels as needed.
+        """
         self.allow_training_compression = allow_training_compression
+        self.decompression_max_window_size = decompression_max_window_size
 
     async def get_compression_dictionary_by_id(
-        self, dictionary_id: int, /
+        self, dictionary_id: int, /, *, level: int
     ) -> "Optional[zstandard.ZstdCompressionDict]":
-        return self.compression_dictionary_by_id.get(dictionary_id, None)
+        sorted_choices = self.compression_dictionary_by_id.get(dictionary_id, None)
+        if not sorted_choices:
+            return None
+
+        for insert_idx, (choice_level, dictionary) in enumerate(sorted_choices):
+            if choice_level == level:
+                return dictionary
+            elif choice_level > level:
+                break
+
+        data = sorted_choices[0][1].as_bytes()
+        zdict = zstandard.ZstdCompressionDict(data)
+        await asyncio.to_thread(zdict.precompute_compress, level)
+        sorted_choices.insert(insert_idx, (level, zdict))
+        return zdict
 
 
 if TYPE_CHECKING:
@@ -243,13 +290,19 @@ class WebsocketPubSubConfigFromParts:
         return self.compression.allow_compression
 
     async def get_compression_dictionary_by_id(
-        self, dictionary_id: int, /
+        self, dictionary_id: int, /, *, level: int
     ) -> "Optional[zstandard.ZstdCompressionDict]":
-        return await self.compression.get_compression_dictionary_by_id(dictionary_id)
+        return await self.compression.get_compression_dictionary_by_id(
+            dictionary_id, level=level
+        )
 
     @property
     def allow_training_compression(self) -> bool:
         return self.compression.allow_training_compression
+
+    @property
+    def decompression_max_window_size(self) -> int:
+        return self.compression.decompression_max_window_size
 
     async def setup_incoming_auth(self) -> None:
         await self.auth.setup_incoming_auth()
@@ -321,13 +374,17 @@ def make_websocket_pub_sub_config(
     websocket_close_timeout: Optional[float],
     websocket_heartbeat_interval: float,
     allow_compression: bool,
-    compression_dictionary_by_id: "Dict[int, zstandard.ZstdCompressionDict]",
+    compression_dictionary_by_id: "Dict[int, Tuple[zstandard.ZstdCompressionDict, int]]",
     allow_training_compression: bool,
+    decompression_max_window_size: int,
     auth: AuthConfig,
 ) -> WebsocketPubSubConfig:
     """Convenience function to make a WebsocketPubSubConfig object without excessive nesting
     if you are specifying everything that doesn't need to be synced with the broadcaster
     within code.
+
+    The compression dictionary object is inputted in the same form as the broadcaster for
+    convenience, and will be converted to the appropriate form for the subscriber
     """
     return WebsocketPubSubConfigFromParts(
         connect=WebsocketPubSubConnectConfigFromParts(
@@ -342,8 +399,12 @@ def make_websocket_pub_sub_config(
         ),
         compression=WebsocketCompressionConfigFromParts(
             allow_compression=allow_compression,
-            compression_dictionary_by_id=compression_dictionary_by_id,
+            compression_dictionary_by_id=dict(
+                (dict_id, [(level, zdict)])
+                for (dict_id, (zdict, level)) in compression_dictionary_by_id.items()
+            ),
             allow_training_compression=allow_training_compression,
+            decompression_max_window_size=decompression_max_window_size,
         ),
         auth=auth,
     )
