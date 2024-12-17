@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Iterator, Literal, Optional, Protocol, Set, Union
 
-from fastapi import WebSocket
+from aiohttp import ClientSession, ClientWebSocketResponse
 from lonelypsp.compat import fast_dataclass
 from lonelypsp.stateful.messages.confirm_notify import B2S_ConfirmNotify
 from lonelypsp.stateful.messages.confirm_subscribe import (
@@ -26,6 +26,7 @@ from lonelypsc.config.config import BroadcastersShuffler, PubSubBroadcasterConfi
 from lonelypsc.config.ws_config import WebsocketPubSubConfig
 from lonelypsc.types.sync_io import SyncIOBaseLikeIO, SyncStandardIO
 from lonelypsc.types.websocket_message import WSMessage
+from lonelypsc.ws.compressor import CompressorStore
 
 
 class StateType(Enum):
@@ -50,8 +51,8 @@ class StateType(Enum):
     """
 
     WAITING_RETRY = auto()
-    """No websocket connection is open but the subscriber plans to try connecting to
-    broadcasters again after a retry period
+    """No websocket connection is open or opening but the subscriber plans to try 
+    connecting to broadcasters again after a retry period
     """
 
     CLOSING = auto()
@@ -97,11 +98,13 @@ class OpenRetryInformationType(Enum):
     """
 
 
+@fast_dataclass
 class OpenRetryInformationStable:
     type: Literal[OpenRetryInformationType.STABLE]
     """discriminator value"""
 
 
+@fast_dataclass
 class OpenRetryInformationTentative:
     type: Literal[OpenRetryInformationType.TENTATIVE]
     """discriminator value"""
@@ -121,9 +124,9 @@ OpenRetryInformation = Union[OpenRetryInformationStable, OpenRetryInformationTen
 class ClosingRetryInformationType(Enum):
     """discriminator value for ClosingRetryInformation.type"""
 
-    NORMALLY = auto()
-    """the websocket is being closed by request from the subscriber; move
-    to CLOSED state without an exception
+    CANNOT_RETRY = auto()
+    """There is an exception that cannot be caught; it must be raised
+    after closing the websocket
     """
 
     WANT_RETRY = auto()
@@ -135,9 +138,15 @@ class ClosingRetryInformationType(Enum):
 
 
 @fast_dataclass
-class ClosingRetryInformationNormally:
-    type: Literal[ClosingRetryInformationType.NORMALLY]
+class ClosingRetryInformationCannotRetry:
+    type: Literal[ClosingRetryInformationType.CANNOT_RETRY]
     """discriminator value"""
+
+    tasks: Optional["TasksOnceOpen"]
+    """the tasks that need to be cleaned up, if any"""
+
+    exception: BaseException
+    """the exception to raise once the websocket is closed"""
 
 
 @fast_dataclass
@@ -160,7 +169,7 @@ class ClosingRetryInformationWantRetry:
 
 
 ClosingRetryInformation = Union[
-    ClosingRetryInformationNormally, ClosingRetryInformationWantRetry
+    ClosingRetryInformationCannotRetry, ClosingRetryInformationWantRetry
 ]
 
 
@@ -402,6 +411,7 @@ class ManagementTaskType(Enum):
     """need to unsubscribe from a glob pattern"""
 
 
+@fast_dataclass
 class ManagementTaskSubscribeExact:
     type: Literal[ManagementTaskType.SUBSCRIBE_EXACT]
     """discriminator value"""
@@ -410,14 +420,16 @@ class ManagementTaskSubscribeExact:
     """the topic to subscribe to"""
 
 
+@fast_dataclass
 class ManagementTaskSubscribeGlob:
     type: Literal[ManagementTaskType.SUBSCRIBE_GLOB]
     """discriminator value"""
 
-    pattern: str
+    glob: str
     """the glob pattern to subscribe to"""
 
 
+@fast_dataclass
 class ManagementTaskUnsubscribeExact:
     type: Literal[ManagementTaskType.UNSUBSCRIBE_EXACT]
     """discriminator value"""
@@ -426,6 +438,7 @@ class ManagementTaskUnsubscribeExact:
     """the topic to unsubscribe from"""
 
 
+@fast_dataclass
 class ManagementTaskUnsubscribeGlob:
     type: Literal[ManagementTaskType.UNSUBSCRIBE_GLOB]
     """discriminator value"""
@@ -503,13 +516,16 @@ class StateConfiguring:
     type: Literal[StateType.CONFIGURING]
     """discriminator value"""
 
+    client_session: ClientSession
+    """the client session the websocket is part of"""
+
     config: WebsocketPubSubConfig
     """how the subscriber is configured"""
 
     broadcaster: PubSubBroadcasterConfig
     """the broadcaster that the websocket goes to"""
 
-    websocket: WebSocket
+    websocket: ClientWebSocketResponse
     """the live websocket to the broadcaster"""
 
     retry: RetryInformation
@@ -517,6 +533,12 @@ class StateConfiguring:
 
     tasks: TasksOnceOpen
     """the tasks that need to be performed after configuring the stream"""
+
+    subscriber_nonce: bytes
+    """the 32 bytes that the subscriber is contributing to the connection nonce"""
+
+    send_task: Optional[asyncio.Task[None]]
+    """if still trying to send the configure message, the task for sending it"""
 
     read_task: asyncio.Task[WSMessage]
     """the task for reading the next message from the websocket"""
@@ -529,17 +551,33 @@ class StateOpen:
     type: Literal[StateType.OPEN]
     """discriminator value"""
 
+    client_session: ClientSession
+    """the client session the websocket is part of"""
+
     config: WebsocketPubSubConfig
     """how the subscriber is configured"""
 
     broadcaster: PubSubBroadcasterConfig
     """the broadcaster that the websocket is connected to"""
 
-    websocket: WebSocket
+    nonce_b64: str
+    """the agreed unique identifier for this connection, that combines the
+    subscribers contribution and the broadcasters contribution, both of which
+    are asked to produce 32 random bytes
+
+    base64 encoded since thats how it is used
+    """
+
+    websocket: ClientWebSocketResponse
     """the live websocket to the broadcaster"""
 
     retry: OpenRetryInformation
     """information required for proceeding in the retry process"""
+
+    compressors: CompressorStore
+    """the available compressors for decompressing incoming messages or compressing
+    outgoing messages
+    """
 
     unsent_notifications: deque[InternalMessage]
     """the unsent messages that should be sent to the broadcaster via NOTIFY / NOTIFY STREAM
@@ -610,7 +648,7 @@ class StateOpen:
     """the task responsible for reading the next message from the websocket"""
 
 
-@dataclass
+@fast_dataclass
 class StateWaitingRetry:
     """the variables in the WAITING_RETRY state"""
 
@@ -645,7 +683,10 @@ class StateClosing:
     broadcaster: PubSubBroadcasterConfig
     """the broadcaster that the websocket was connected to"""
 
-    websocket: WebSocket
+    client_session: ClientSession
+    """the client session the websocket is part of"""
+
+    websocket: ClientWebSocketResponse
     """the potentially live websocket to the broadcaster"""
 
     retry: ClosingRetryInformation

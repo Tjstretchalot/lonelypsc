@@ -82,6 +82,19 @@ class WebsocketGenericConfig(Protocol):
         """
 
     @property
+    def websocket_open_timeout(self) -> Optional[float]:
+        """The maximum amount of time to wait for the websocket connection to be
+        established before trying the next broadcaster
+        """
+
+    @property
+    def websocket_receive_timeout(self) -> Optional[float]:
+        """The maximum amount of time to spend waiting for data on the websocket
+        before assuming the connection was lost. Note that this should be larger
+        than the heartbeat interval
+        """
+
+    @property
     def websocket_close_timeout(self) -> Optional[float]:
         """The maximum amount of time to wait after trying to close the websocket
         connection for the acknowledgement from the broadcaster
@@ -94,6 +107,87 @@ class WebsocketGenericConfig(Protocol):
         connection issues.
         """
 
+    @property
+    def websocket_minimal_headers(self) -> bool:
+        """True if all messages from the subscriber to the broadcaster should use
+        minimal headers, which are faster to parse and more compact but require
+        that the subscriber and broadcaster precisely agree on the headers for
+        each message. False if all messages from the subscriber to the
+        broadcaster use expanded headers, which are more flexible and easier to
+        debug but slower to parse and more verbose.
+
+        If you are trying to understand the lonelypss protocol via something
+        like wireshark, setting this to False will make messages somewhat easier
+        to understand.
+
+        Note that broadcasters and subscribers do not need to agree on this
+        setting. It is ok if the broadcaster is sending expanded headers and the
+        subscriber is sending minimal headers, or vice versa, as this only
+        configures the outgoing messages but they both always accept either
+        version for incoming messages.
+
+        Generally, this should be True except when in the process of updating
+        the lonelypss/lonelypsc libraries, in which case it should be changed to
+        false on the broadcaster and subscribers, then they should be updated
+        one at a time, then set to true.
+        """
+
+    @property
+    def max_sent_notifications(self) -> Optional[int]:
+        """The maximum number of unacknowledged notifications before the subscriber
+        disconnects because the broadcaster cannot keep up, or None for no limit.
+
+        This is not useful for backpressure; instead, use the fact that notify()
+        returns a coroutine that is not complete until the broadcaster has
+        acknowledged the notification or the subscriber has dropped it, so e.g.
+        a semaphore (or any other concurrency primitive) can be used to limit the
+        number of unacknowledged notifications
+
+        This is useful as a better error message if the above mechanism is not
+        working as intended, so e.g. if the caller knows that it intends to have
+        at most 3 unacknowledged notifications at any time, it can set this to 3
+        so that an error is raised if there are 4 unacknowledged notifications
+        """
+
+    @property
+    def max_expected_acks(self) -> Optional[int]:
+        """The maximum number of unacknowledged management tasks OR notifications;
+        this should be at least `max_sent_notifications` plus the number of subscriptions
+        (topic or glob) that may be made
+
+        This is not useful for backpressure, and there is no way to implement
+        backpressure for subscribe requests as they are sent in bulk at the
+        beginning of a retry (since it would be highly unusual to have so many
+        that backpressure is required). Instead, if there are a lot of topics
+        the subscriber is interested in, use glob patterns to reduce the amount
+        of work by the broadcaster and noise when reconnecting
+
+        This is useful as a sanity check that the subscriber is not sending an
+        excessive number of subscribe requests at the start of the connection
+        (e.g., thousands), which likely means there is a bug or poor pattern in
+        the subscriber code
+
+        Note that if you DO have a good reason for subscribing to many topics
+        instead of combining them with a pattern, there is no sudden cutoff when
+        setting this to a large value (or None). The subscriptions all need to
+        be maintained in memory on the subscribers side; so e.g. if there are
+        100,000 topics at 64 bytes each it would take on the order of 6mb of
+        memory for the topics themselves, plus 2-5x that when reconnecting. It
+        may also be helpful, if doing this, to look over the DB config on the
+        broadcaster and see if there are possible optimizations on how the
+        subscriptions are stored/retrieved for this usecase
+
+        Performance wise, having lots of exact topic subscriptions generally
+        don't incur excessive overhead (as it's a dict lookup on the subscriber
+        side and a btree lookup on the broadcaster side), but having lots of
+        glob subscriptions generally does incur linear overhead on both sides.
+        If you have a lot of glob subscriptions (>100), but not an excessive
+        number of topics, consider at least changing the broadcasters
+        implementation to cache topic -> current globs that match to speed up
+        that side (this is generally not a good optimization if there are not
+        a significant number of glob subscriptions)
+        """
+
 
 class WebsocketGenericConfigFromParts:
     """Convenience class to construct an object fulfilling the WebsocketGenericConfig
@@ -103,12 +197,22 @@ class WebsocketGenericConfigFromParts:
     def __init__(
         self,
         max_websocket_message_size: Optional[int],
+        websocket_open_timeout: Optional[float],
+        websocket_receive_timeout: Optional[float],
         websocket_close_timeout: Optional[float],
         websocket_heartbeat_interval: float,
+        websocket_minimal_headers: bool,
+        max_sent_notifications: Optional[int],
+        max_expected_acks: Optional[int],
     ):
         self.max_websocket_message_size = max_websocket_message_size
+        self.websocket_open_timeout = websocket_open_timeout
+        self.websocket_receive_timeout = websocket_receive_timeout
         self.websocket_close_timeout = websocket_close_timeout
         self.websocket_heartbeat_interval = websocket_heartbeat_interval
+        self.websocket_minimal_headers = websocket_minimal_headers
+        self.max_sent_notifications = max_sent_notifications
+        self.max_expected_acks = max_expected_acks
 
 
 if TYPE_CHECKING:
@@ -135,6 +239,17 @@ class WebsocketCompressionConfig(Protocol):
         The provided compression level is the hint returned from the broadcaster,
         to avoid having to duplicate that configuration here. The returned dict
         should have its data precomputed as if by `precompute_compress`
+        """
+
+    @property
+    def initial_compression_dict_id(self) -> Optional[int]:
+        """Either None to indicate no initial preset compression dictionary should be
+        used, or the id of the preset compression dictionary appropriate for the
+        messages that are expected to be sent over the connection. The subscriber will
+        send this recommendation in the CONFIGURE packet, but will not use it unless
+        the broadcaster agrees with the ENABLE_ZSTD_PRESET packet, which will also
+        configure the other metadata (min/max size of messages to use this preset with,
+        compression level)
         """
 
     @property
@@ -198,6 +313,7 @@ class WebsocketCompressionConfigFromParts:
         self,
         allow_compression: bool,
         compression_dictionary_by_id: "Dict[int, List[Tuple[int, zstandard.ZstdCompressionDict]]]",
+        initial_compression_dict_id: Optional[int],
         allow_training_compression: bool,
         decompression_max_window_size: int,
     ):
@@ -208,6 +324,7 @@ class WebsocketCompressionConfigFromParts:
         initialize this with a guess for what level the broadcaster will suggest for compression,
         typically 10, and this will automatically fill in remaining levels as needed.
         """
+        self.initial_compression_dict_id = initial_compression_dict_id
         self.allow_training_compression = allow_training_compression
         self.decompression_max_window_size = decompression_max_window_size
 
@@ -278,12 +395,32 @@ class WebsocketPubSubConfigFromParts:
         return self.generic.max_websocket_message_size
 
     @property
+    def websocket_open_timeout(self) -> Optional[float]:
+        return self.generic.websocket_open_timeout
+
+    @property
+    def websocket_receive_timeout(self) -> Optional[float]:
+        return self.generic.websocket_open_timeout
+
+    @property
     def websocket_close_timeout(self) -> Optional[float]:
         return self.generic.websocket_close_timeout
 
     @property
     def websocket_heartbeat_interval(self) -> float:
         return self.generic.websocket_heartbeat_interval
+
+    @property
+    def websocket_minimal_headers(self) -> bool:
+        return self.generic.websocket_minimal_headers
+
+    @property
+    def max_sent_notifications(self) -> Optional[int]:
+        return self.generic.max_sent_notifications
+
+    @property
+    def max_expected_acks(self) -> Optional[int]:
+        return self.generic.max_expected_acks
 
     @property
     def allow_compression(self) -> bool:
@@ -295,6 +432,10 @@ class WebsocketPubSubConfigFromParts:
         return await self.compression.get_compression_dictionary_by_id(
             dictionary_id, level=level
         )
+
+    @property
+    def initial_compression_dict_id(self) -> Optional[int]:
+        return self.compression.initial_compression_dict_id
 
     @property
     def allow_training_compression(self) -> bool:
@@ -371,10 +512,16 @@ def make_websocket_pub_sub_config(
     outgoing_initial_connect_retries: int,
     outgoing_min_reconnect_interval: float,
     max_websocket_message_size: Optional[int],
+    websocket_open_timeout: Optional[float],
+    websocket_receive_timeout: Optional[float],
     websocket_close_timeout: Optional[float],
     websocket_heartbeat_interval: float,
+    websocket_minimal_headers: bool,
+    max_sent_notifications: Optional[int],
+    max_expected_acks: Optional[int],
     allow_compression: bool,
     compression_dictionary_by_id: "Dict[int, Tuple[zstandard.ZstdCompressionDict, int]]",
+    initial_compression_dict_id: Optional[int],
     allow_training_compression: bool,
     decompression_max_window_size: int,
     auth: AuthConfig,
@@ -394,8 +541,13 @@ def make_websocket_pub_sub_config(
         ),
         generic=WebsocketGenericConfigFromParts(
             max_websocket_message_size=max_websocket_message_size,
+            websocket_open_timeout=websocket_open_timeout,
+            websocket_receive_timeout=websocket_receive_timeout,
             websocket_close_timeout=websocket_close_timeout,
             websocket_heartbeat_interval=websocket_heartbeat_interval,
+            websocket_minimal_headers=websocket_minimal_headers,
+            max_sent_notifications=max_sent_notifications,
+            max_expected_acks=max_expected_acks,
         ),
         compression=WebsocketCompressionConfigFromParts(
             allow_compression=allow_compression,
@@ -404,6 +556,7 @@ def make_websocket_pub_sub_config(
                 for (dict_id, (zdict, level)) in compression_dictionary_by_id.items()
             ),
             allow_training_compression=allow_training_compression,
+            initial_compression_dict_id=initial_compression_dict_id,
             decompression_max_window_size=decompression_max_window_size,
         ),
         auth=auth,

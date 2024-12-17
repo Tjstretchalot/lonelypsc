@@ -1,5 +1,16 @@
 import random
-from typing import TYPE_CHECKING, Dict, List, Optional, TypedDict, Union, cast
+from typing import (
+    TYPE_CHECKING,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Type,
+    TypedDict,
+    Union,
+    cast,
+)
 
 
 class SimplePubSubBroadcasterConfig(TypedDict):
@@ -129,6 +140,9 @@ class _BroadcasterShufflerIterator:
 
         return self.parent.sorted_broadcasters[choice]
 
+    def __iter__(self) -> "_BroadcasterShufflerIterator":
+        return self
+
 
 class BroadcastersShuffler:
     """An object that can precompute whatever internal data structure is
@@ -163,8 +177,10 @@ class BroadcastersShuffler:
 
 
 if TYPE_CHECKING:
-    _: PubSubBroadcasterConfig = {"host": "http://localhost:3003"}
-    __: PubSubBroadcasterConfig = {
+    _: Type[Iterator[PubSubBroadcasterConfig]] = _BroadcasterShufflerIterator
+    __: Type[Iterable[PubSubBroadcasterConfig]] = BroadcastersShuffler
+    ___: PubSubBroadcasterConfig = {"host": "http://localhost:3003"}
+    ____: PubSubBroadcasterConfig = {
         "host": "http://localhost:3003",
         "priority": 0,
     }
