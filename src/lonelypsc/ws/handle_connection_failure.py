@@ -1,3 +1,4 @@
+import asyncio
 import random
 import sys
 import time
@@ -11,6 +12,7 @@ from lonelypsc.ws.state import (
     InternalMessageStateType,
     RetryInformation,
     State,
+    StateClosed,
     StateConnecting,
     StateType,
     StateWaitingRetry,
@@ -26,8 +28,9 @@ else:
 async def handle_connection_failure(
     *,
     config: WebsocketPubSubConfig,
+    cancel_requested: asyncio.Event,
     retry: RetryInformation,
-    tasks: "TasksOnceOpen",
+    tasks: TasksOnceOpen,
     exception: BaseException,
 ) -> State:
     """Handles a connection failure by either moving to the next broadcaster,
@@ -40,6 +43,8 @@ async def handle_connection_failure(
 
     Args:
         config (WebsocketPubSubConfig): The configuration for the subscriber
+        cancel_requested (asyncio.Event): whether the state machine is trying to
+            gracefully shutdown (set) or not (not set)
         retry (RetryInformation): how to determine the next broadcaster
         tasks (TasksOnceOpen): the tasks that need to be performed if a broadcaster
             can be reached or canceled if moving to closed
@@ -56,11 +61,16 @@ async def handle_connection_failure(
             the way to outside this library
     """
 
+    if cancel_requested.is_set():
+        await cleanup_tasks_and_raise_on_error(tasks, "cancel requested")
+        return StateClosed(type=StateType.CLOSED)
+
     try:
         next_broadcaster = next(retry.iterator)
         return StateConnecting(
             type=StateType.CONNECTING,
             config=config,
+            cancel_requested=cancel_requested,
             broadcaster=next_broadcaster,
             retry=retry,
             tasks=tasks,
@@ -75,6 +85,7 @@ async def handle_connection_failure(
         return StateWaitingRetry(
             type=StateType.WAITING_RETRY,
             config=config,
+            cancel_requested=cancel_requested,
             retry=retry,
             tasks=tasks,
             retry_at=time.time() + (2 ** (retry.iteration - 1) + random.random()),
@@ -83,16 +94,11 @@ async def handle_connection_failure(
     await cleanup_tasks_and_raise(tasks, "retries exhausted", exception)
 
 
-async def cleanup_tasks_and_raise(
-    tasks: TasksOnceOpen, message: str, cause: BaseException
-) -> Never:
-    """Cleans up the given tasks list and raises the given exception;
-    if closing the tasks raises an exception, that exception is combined
-    with the original exception and raised
-    """
+async def cleanup_tasks_and_return_errors(tasks: TasksOnceOpen) -> List[BaseException]:
+    """Cleans up the given tasks, returning any errors that occurred"""
     cleanup_excs: List[BaseException] = []
     while tasks.resending_notifications:
-        notif = tasks.resending_notifications.popleft()
+        notif = tasks.resending_notifications.pop()
         try:
             await notif.callback(
                 InternalMessageStateDroppedSent(
@@ -102,8 +108,7 @@ async def cleanup_tasks_and_raise(
         except BaseException as e:
             cleanup_excs.append(e)
 
-    while tasks.unsent_notifications:
-        notif = tasks.unsent_notifications.popleft()
+    for notif in tasks.unsent_notifications.drain():
         try:
             await notif.callback(
                 InternalMessageStateDroppedUnsent(
@@ -112,6 +117,26 @@ async def cleanup_tasks_and_raise(
             )
         except BaseException as e:
             cleanup_excs.append(e)
+
+    return cleanup_excs
+
+
+async def cleanup_tasks_and_raise_on_error(tasks: TasksOnceOpen, message: str) -> None:
+    """Cleans up the given tasks list and raises an exception if any errors occurred"""
+    cleanup_excs = await cleanup_tasks_and_return_errors(tasks)
+
+    if cleanup_excs:
+        raise combine_multiple_exceptions(message, cleanup_excs)
+
+
+async def cleanup_tasks_and_raise(
+    tasks: TasksOnceOpen, message: str, cause: BaseException
+) -> Never:
+    """Cleans up the given tasks list and raises the given exception;
+    if closing the tasks raises an exception, that exception is combined
+    with the original exception and raised
+    """
+    cleanup_excs = await cleanup_tasks_and_return_errors(tasks)
 
     if cleanup_excs:
         raise combine_multiple_exceptions(

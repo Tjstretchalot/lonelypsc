@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Dict
 from lonelypsc.ws.handlers.closing import handle_closing
 from lonelypsc.ws.handlers.configuring import handle_configuring
 from lonelypsc.ws.handlers.connecting import handle_connecting
+from lonelypsc.ws.handlers.open.handler import handle_open
 from lonelypsc.ws.handlers.protocol import StateHandler
 from lonelypsc.ws.handlers.waiting_retry import handle_waiting_retry
 from lonelypsc.ws.state import State, StateType
@@ -11,6 +12,7 @@ _handlers: Dict[StateType, StateHandler] = {
     StateType.CONNECTING: handle_connecting,
     StateType.CONFIGURING: handle_configuring,
     StateType.WAITING_RETRY: handle_waiting_retry,
+    StateType.OPEN: handle_open,
     StateType.CLOSING: handle_closing,
 }
 

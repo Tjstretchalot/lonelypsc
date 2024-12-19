@@ -49,6 +49,7 @@ async def handle_closing(state: State) -> State:
     if state.retry.type == ClosingRetryInformationType.WANT_RETRY:
         return await handle_connection_failure(
             config=state.config,
+            cancel_requested=state.cancel_requested,
             retry=state.retry.retry,
             tasks=state.retry.tasks,
             exception=state.retry.exception,

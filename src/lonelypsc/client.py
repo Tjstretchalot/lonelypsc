@@ -566,7 +566,7 @@ class PubSubClientSubscription:
             if self.state.type == _STATE_ENTERED_BUFFERING:
                 self.state.status_queue.put_nowait(PubSubClientConnectionStatus.LOST)
 
-    async def on_connection_restored(self) -> None:
+    async def on_connection_established(self) -> None:
         async with self._state_lock:
             if self.state.type == _STATE_ENTERED_BUFFERING:
                 self.state.status_queue.put_nowait(PubSubClientConnectionStatus.OK)
@@ -779,26 +779,47 @@ class PubSubDirectOnMessageWithCleanupReceiver(Protocol):
 
 class PubSubDirectConnectionStatusReceiver(Protocol):
     """Describes an object that wants to receive feedback about the state of the
-    connection, if any information is known. This mostly applies to websockets
-    which have active connection management.
+    connection, if any information is known. This is most directly interpretable
+    with active connections (e.g., websockets)
     """
 
     async def on_connection_lost(self) -> None:
-        """Called to indicate that we know it's possible that we are missing
-        some notifications right now. After this is called, eventually either
-        on_connection_restored will be called or on_connection_abandoned will
-        be called and all future attempts to receive messages will result in
-        an error
+        """
+        Called to indicate that the subscriber knows it's possible that we are
+        missing some notifications right now and moving forward. Generally, the
+        only thing an implementation can do with this is switch to polling, or in
+        practice, set a timeout for an alert if the connection is not established
+        again in time.
+
+        NOTE: this will be called under normal circumstances if registering
+        status receivers prior to setting up the receiver
         """
 
-    async def on_connection_restored(self) -> None:
-        """Indicates we re-established a connection and now expect that we are
-        receiving messages without interruption.
+    async def on_connection_established(self) -> None:
+        """Indicates we (re-)established a connection and now expect that we are
+        receiving messages without interruption. This is the most meaningful event
+        that implementations can use as it will definitely be called in normal operations
+        (when the connection is first established, which, assuming the service regularly
+        restarts for e.g. updates, will happen regularly), and by implementating will
+        naturally take care of small interruptions in the connection
+
+        There are a few general operations that implementations would perform
+        - if using these notifications to fill a local cache, which on misses checks
+          the source of truth, just clear the local cache
+        - if there is an external log of messages, check for and replay messages
+          that weren't processed (taking care to ensure this completes, e.g., by
+          marking the current position before starting)
         """
 
     async def on_connection_abandoned(self) -> None:
-        """Indicates we have given up trying to re-establish the connection and
-        will raise errors when trying to receive messages
+        """Indicates the subscriber has given up trying to re-establish the connection and
+        will raise errors when trying to receive messages.
+
+        This will happen in normal operation when exiting the context manager for
+        the websocket client (i.e., closing the websocket by subscriber request),
+        and normally doesn't have any useful recovery. If this was not expected
+        and error is going to be raised in the notify/receive methods which can
+        be handled with better context
         """
 
 
@@ -954,18 +975,77 @@ class PubSubClientReceiver(Protocol):
     """Something capable of registering additional callbacks when messages are received"""
 
     @property
-    def connection_status(self) -> PubSubClientConnectionStatus: ...
+    def connection_status(self) -> PubSubClientConnectionStatus:
+        """The subscribers best belief on the current state of the connection. This
+        is generally for debugging. See `register_status_handler` for the more useful
+        interface programmatically
+        """
 
-    async def setup_receiver(self) -> None: ...
-    async def teardown_receiver(self) -> None: ...
+    async def setup_receiver(self) -> None:
+        """Performs any necessary work to prepare to receive messages from the
+        broadcaster
+        """
+
+    async def teardown_receiver(self) -> None:
+        """Called to notify that this object is no longer expected to call status
+        handlers or message handlers. Generally, tears down any work done in
+        setup_receiver. Implementations MAY assume that after teardown the object
+        will not be used again, though in that case they SHOULD raise an error on
+        unsupported setup calls.
+        """
+
     async def register_on_message(
         self, /, *, receiver: PubSubDirectOnMessageWithCleanupReceiver
-    ) -> int: ...
-    async def unregister_on_message(self, /, *, registration_id: int) -> None: ...
+    ) -> int:
+        """Registers the given receiver to be called when a message on one of the
+        subscribed topics (either via an exact match or a glob match) is received,
+        and returns an id that can be used to unregister the receiver.
+        """
+
+    async def unregister_on_message(self, /, *, registration_id: int) -> None:
+        """Unregisters the receiver with the given id. The implementation MAY assume
+        that the registration id is valid (returned from register_on_message from
+        this object and not invalidated), and if it is not, may arbitrarily do any
+        of the following:
+        - corrupt its state
+        - unregister an unrelated receiver
+        - raise an error
+        - do nothing
+
+        Regardless of if this raises an error, afterwards the registration id MUST
+        be considered invalidated by the caller
+        """
+
     async def register_status_handler(
         self, /, *, receiver: PubSubDirectConnectionStatusReceiver
-    ) -> int: ...
-    async def unregister_status_handler(self, /, *, registration_id: int) -> None: ...
+    ) -> int:
+        """Registers the given receiver to be called when the connection status changes,
+        and returns an id that can be used to unregister the receiver.
+
+        The core purpose of the receiver is so that the caller can perform some
+        operation when it may have missed messages but is now receiving messages.
+        The most general thing it could do is look at a log of the messages sent
+        over the topic stored elsewhere and replay any it hasn't seen, but most of
+        the time there is a simpler alternative.
+
+        For example, if the caller does the same idempotent operation regardless
+        of the contents/topic of the message, then they can simply do that operation
+        on `on_connec
+        """
+
+    async def unregister_status_handler(self, /, *, registration_id: int) -> None:
+        """Unregisters the receiver with the given id. The implementation MAY assume
+        that the registration id is valid (returned from register_status_handler from
+        this object and not invalidated), and if it is not, may arbitrarily do any
+        of the following:
+        - corrupt its state
+        - unregister an unrelated receiver
+        - raise an error
+        - do nothing
+
+        Regardless of if this raises an error, afterwards the registration id MUST
+        be considered invalidated by the caller
+        """
 
 
 class PubSubClient:

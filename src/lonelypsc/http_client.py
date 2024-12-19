@@ -675,12 +675,15 @@ class HttpPubSubClientReceiver:
     async def register_status_handler(
         self, /, *, receiver: PubSubDirectConnectionStatusReceiver
     ) -> int:
-        # we do not attempt to verify connection status over http
+        # we do not attempt to verify connection status over http currently
+        # TODO: should at least wait for `setup_receiver` before calling `on_connection_established`
         self._status_counter += 1
+        await receiver.on_connection_established()
         return self._status_counter
 
     async def unregister_status_handler(self, /, *, registration_id: int) -> None:
         # we do not attempt to verify connection status over http
+        assert registration_id <= self._status_counter, "invalid registration id"
         ...
 
 

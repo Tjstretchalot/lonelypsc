@@ -150,6 +150,18 @@ class WebsocketGenericConfig(Protocol):
         """
 
     @property
+    def max_unsent_notifications(self) -> Optional[int]:
+        """the maximum number of unsent notifications queued up before the subscriber
+        disconnects because either the broadcaster or the subscriber cannot keep
+        up, or None for no limit.
+
+        This is very similar to `max_sent_notifications` in practice, and should usually
+        be set to the same value. This could differ in theory in that it will trigger
+        first if trying to send a lot of notifications within the same event loop, or
+        the network buffer is actually full (i.e., `send_bytes` is taking a long time)
+        """
+
+    @property
     def max_expected_acks(self) -> Optional[int]:
         """The maximum number of unacknowledged management tasks OR notifications;
         this should be at least `max_sent_notifications` plus the number of subscriptions
@@ -178,7 +190,7 @@ class WebsocketGenericConfig(Protocol):
         subscriptions are stored/retrieved for this usecase
 
         Performance wise, having lots of exact topic subscriptions generally
-        don't incur excessive overhead (as it's a dict lookup on the subscriber
+        doesn't incur excessive overhead (as it's a dict lookup on the subscriber
         side and a btree lookup on the broadcaster side), but having lots of
         glob subscriptions generally does incur linear overhead on both sides.
         If you have a lot of glob subscriptions (>100), but not an excessive
@@ -186,6 +198,17 @@ class WebsocketGenericConfig(Protocol):
         implementation to cache topic -> current globs that match to speed up
         that side (this is generally not a good optimization if there are not
         a significant number of glob subscriptions)
+        """
+
+    @property
+    def max_received(self) -> Optional[int]:
+        """The maximum number of messages that have been received by the
+        subscriber but not yet sent to message receivers, or None for no
+        limit. At this limit the websocket will be disconnected.
+
+        This is not useful for backpressure as the websocket gets disconnected
+        when this limit is reached; instead, it is useful as a sanity check
+        to ensure the subscriber can keep up with the incoming messages.
         """
 
 
@@ -203,7 +226,9 @@ class WebsocketGenericConfigFromParts:
         websocket_heartbeat_interval: float,
         websocket_minimal_headers: bool,
         max_sent_notifications: Optional[int],
+        max_unsent_notifications: Optional[int],
         max_expected_acks: Optional[int],
+        max_received: Optional[int],
     ):
         self.max_websocket_message_size = max_websocket_message_size
         self.websocket_open_timeout = websocket_open_timeout
@@ -212,7 +237,9 @@ class WebsocketGenericConfigFromParts:
         self.websocket_heartbeat_interval = websocket_heartbeat_interval
         self.websocket_minimal_headers = websocket_minimal_headers
         self.max_sent_notifications = max_sent_notifications
+        self.max_unsent_notifications = max_unsent_notifications
         self.max_expected_acks = max_expected_acks
+        self.max_received = max_received
 
 
 if TYPE_CHECKING:
@@ -419,8 +446,16 @@ class WebsocketPubSubConfigFromParts:
         return self.generic.max_sent_notifications
 
     @property
+    def max_unsent_notifications(self) -> Optional[int]:
+        return self.generic.max_unsent_notifications
+
+    @property
     def max_expected_acks(self) -> Optional[int]:
         return self.generic.max_expected_acks
+
+    @property
+    def max_received(self) -> Optional[int]:
+        return self.generic.max_received
 
     @property
     def allow_compression(self) -> bool:
@@ -518,7 +553,9 @@ def make_websocket_pub_sub_config(
     websocket_heartbeat_interval: float,
     websocket_minimal_headers: bool,
     max_sent_notifications: Optional[int],
+    max_unsent_notifications: Optional[int],
     max_expected_acks: Optional[int],
+    max_received: Optional[int],
     allow_compression: bool,
     compression_dictionary_by_id: "Dict[int, Tuple[zstandard.ZstdCompressionDict, int]]",
     initial_compression_dict_id: Optional[int],
@@ -547,7 +584,9 @@ def make_websocket_pub_sub_config(
             websocket_heartbeat_interval=websocket_heartbeat_interval,
             websocket_minimal_headers=websocket_minimal_headers,
             max_sent_notifications=max_sent_notifications,
+            max_unsent_notifications=max_unsent_notifications,
             max_expected_acks=max_expected_acks,
+            max_received=max_received,
         ),
         compression=WebsocketCompressionConfigFromParts(
             allow_compression=allow_compression,

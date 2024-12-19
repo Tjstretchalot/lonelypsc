@@ -1,9 +1,8 @@
 import asyncio
 import hashlib
-from collections import deque
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Iterator, Literal, Optional, Protocol, Set, Union
+from typing import Iterator, List, Literal, Optional, Protocol, Set, Union
 
 from aiohttp import ClientSession, ClientWebSocketResponse
 from lonelypsp.compat import fast_dataclass
@@ -21,6 +20,8 @@ from lonelypsp.stateful.messages.receive_stream import (
     B2S_ReceiveStreamStartCompressed,
     B2S_ReceiveStreamStartUncompressed,
 )
+from lonelypsp.util.bounded_deque import BoundedDeque
+from lonelypsp.util.drainable_asyncio_queue import DrainableAsyncioQueue
 
 from lonelypsc.config.config import BroadcastersShuffler, PubSubBroadcasterConfig
 from lonelypsc.config.ws_config import WebsocketPubSubConfig
@@ -373,28 +374,6 @@ class InternalLargeMessage:
 InternalMessage = Union[InternalSmallMessage, InternalLargeMessage]
 
 
-@fast_dataclass
-class TasksOnceOpen:
-    """When not in the OPEN state the client can still receive requests to
-    perform operations (e.g., subscribe, notify). This object keeps track
-    of those operations that need to be performed until the OPEN state, where
-    they are transformed into a different form for actually being sent across
-    the websocket
-    """
-
-    exact_subscriptions: Set[bytes]
-    """The topics which should be subscribed to"""
-
-    glob_subscriptions: Set[str]
-    """The glob patterns which should be subscribed to"""
-
-    unsent_notifications: deque[InternalMessage]
-    """The unsent messages that should be sent to the broadcaster via NOTIFY / NOTIFY STREAM."""
-
-    resending_notifications: deque[InternalMessage]
-    """The resending messages that should be sent to the broadcaster via NOTIFY / NOTIFY STREAM"""
-
-
 class ManagementTaskType(Enum):
     """discriminator value for `ManagementTask.type`"""
 
@@ -409,6 +388,9 @@ class ManagementTaskType(Enum):
 
     UNSUBSCRIBE_GLOB = auto()
     """need to unsubscribe from a glob pattern"""
+
+    GRACEFUL_DISCONNECT = auto()
+    """graceful disconnect requested"""
 
 
 @fast_dataclass
@@ -443,7 +425,7 @@ class ManagementTaskUnsubscribeGlob:
     type: Literal[ManagementTaskType.UNSUBSCRIBE_GLOB]
     """discriminator value"""
 
-    pattern: str
+    glob: str
     """the glob pattern to unsubscribe from"""
 
 
@@ -453,6 +435,32 @@ ManagementTask = Union[
     ManagementTaskUnsubscribeExact,
     ManagementTaskUnsubscribeGlob,
 ]
+
+
+@fast_dataclass
+class TasksOnceOpen:
+    """When not in the OPEN state the client can still receive requests to
+    perform operations (e.g., subscribe, notify). This object keeps track
+    of those operations that need to be performed until the OPEN state, where
+    they are transformed into a different form for actually being sent across
+    the websocket
+    """
+
+    exact_subscriptions: Set[bytes]
+    """The topics which should be subscribed to"""
+
+    glob_subscriptions: Set[str]
+    """The glob patterns which should be subscribed to"""
+
+    unsorted: DrainableAsyncioQueue[ManagementTask]
+    """management tasks which have been sent from other asyncio coroutines and not applied yet"""
+
+    unsent_notifications: DrainableAsyncioQueue[InternalMessage]
+    """The unsent messages that should be sent to the broadcaster via NOTIFY / NOTIFY STREAM."""
+
+    resending_notifications: List[InternalMessage]
+    """The resending messages that should be sent to the broadcaster via NOTIFY / NOTIFY STREAM"""
+
 
 Acknowledgement = Union[
     B2S_ConfirmSubscribeExact,
@@ -489,6 +497,52 @@ class ReceiveStreamState:
     """
 
 
+class ReceivedMessageType(Enum):
+    """Discriminator value for `ReceivedMessage.type`"""
+
+    SMALL = auto()
+    """The message is entirely in memory"""
+
+    LARGE = auto()
+    """The message is in a stream"""
+
+
+@fast_dataclass
+class ReceivedSmallMessage:
+    """A received message which is entirely in memory"""
+
+    type: Literal[ReceivedMessageType.SMALL]
+    """discriminator value"""
+
+    topic: bytes
+    """the topic the message was sent to"""
+
+    data: bytes
+    """the uncompressed message data"""
+
+
+@fast_dataclass
+class ReceivedLargeMessage:
+    """A received message which is not entirely in memory; closing the
+    stream will delete the data. must close the stream once it is
+    consumed
+    """
+
+    type: Literal[ReceivedMessageType.LARGE]
+    """discriminator value"""
+
+    topic: bytes
+    """the topic the message was sent to"""
+
+    stream: SyncIOBaseLikeIO
+    """the readable, seekable, tellable, closeable stream that the message data can
+    be read from
+    """
+
+
+ReceivedMessage = Union[ReceivedSmallMessage, ReceivedLargeMessage]
+
+
 @fast_dataclass
 class StateConnecting:
     """the variables when in the CONNECTING state"""
@@ -498,6 +552,9 @@ class StateConnecting:
 
     config: WebsocketPubSubConfig
     """how the subscriber is configured"""
+
+    cancel_requested: asyncio.Event
+    """if set, the state machine should move to closed as soon as possible"""
 
     broadcaster: PubSubBroadcasterConfig
     """the broadcaster that is being connected to"""
@@ -521,6 +578,9 @@ class StateConfiguring:
 
     config: WebsocketPubSubConfig
     """how the subscriber is configured"""
+
+    cancel_requested: asyncio.Event
+    """if set, the state machine should move to closed as soon as possible"""
 
     broadcaster: PubSubBroadcasterConfig
     """the broadcaster that the websocket goes to"""
@@ -557,6 +617,9 @@ class StateOpen:
     config: WebsocketPubSubConfig
     """how the subscriber is configured"""
 
+    cancel_requested: asyncio.Event
+    """if set, the state machine should move to closed as soon as possible"""
+
     broadcaster: PubSubBroadcasterConfig
     """the broadcaster that the websocket is connected to"""
 
@@ -579,12 +642,12 @@ class StateOpen:
     outgoing messages
     """
 
-    unsent_notifications: deque[InternalMessage]
+    unsent_notifications: DrainableAsyncioQueue[InternalMessage]
     """the unsent messages that should be sent to the broadcaster via NOTIFY / NOTIFY STREAM
     in this order
     """
 
-    resending_notifications: deque[InternalMessage]
+    resending_notifications: List[InternalMessage]
     """the resending messages that should be sent to the broadcaster via NOTIFY / NOTIFY STREAM
     in this order
 
@@ -601,7 +664,7 @@ class StateOpen:
     empties out at the beginning of the connection and never refills
     """
 
-    sent_notifications: deque[InternalMessage]
+    sent_notifications: BoundedDeque[InternalMessage]
     """the messages that have been sent to the broadcaster but not acknowledged,
     in the order they are expected to be acknowledged.
 
@@ -619,24 +682,29 @@ class StateOpen:
     """
 
     exact_subscriptions: Set[bytes]
-    """the topics the subscriber is subscribed to AFTER all management tasks are
+    """the topics the subscriber is subscribed to BEFORE all management tasks are
     completed; this is used for restoring the state if the connection is lost
     """
 
     glob_subscriptions: Set[str]
-    """the glob patterns the subscriber is susbcribed to AFTER all management tasks
+    """the glob patterns the subscriber is susbcribed to BEFORE all management tasks
     are completed; this is used for restoring the state if the connection is lost
     """
 
-    management_tasks: deque[ManagementTask]
+    management_tasks: DrainableAsyncioQueue[ManagementTask]
     """the management tasks that need to be performed in the order they need to be
     performed
     """
 
-    expected_acks: deque[Acknowledgement]
+    expected_acks: BoundedDeque[Acknowledgement]
     """the acknowledgements the subscriber expects to receive in the order they
     are expected to be received; receiving an acknowledgement out of order 
     is an error.
+    """
+
+    received: DrainableAsyncioQueue[ReceivedMessage]
+    """the messages that have been received from the broadcaster but not yet
+    consumed; it's expected that this is consumed from outside the state machine
     """
 
     send_task: Optional[asyncio.Task[None]]
@@ -646,6 +714,12 @@ class StateOpen:
 
     read_task: asyncio.Task[WSMessage]
     """the task responsible for reading the next message from the websocket"""
+
+    popleft_unsent_notifications_task: Optional[asyncio.Task[InternalMessage]]
+    """if there is a task to remove the next unsent notification, that task, otherwise None"""
+
+    popleft_management_tasks_task: Optional[asyncio.Task[ManagementTask]]
+    """if there is a task to remove the next management task, that task, otherwise None"""
 
 
 @fast_dataclass
@@ -657,6 +731,9 @@ class StateWaitingRetry:
 
     config: WebsocketPubSubConfig
     """how the subscriber is configured"""
+
+    cancel_requested: asyncio.Event
+    """if set, the state machine should move to closed as soon as possible"""
 
     retry: RetryInformation
     """information required for proceeding in the retry process"""
@@ -679,6 +756,9 @@ class StateClosing:
 
     config: WebsocketPubSubConfig
     """how the subscriber is configured"""
+
+    cancel_requested: asyncio.Event
+    """if set, the state machine should move to closed as soon as possible"""
 
     broadcaster: PubSubBroadcasterConfig
     """the broadcaster that the websocket was connected to"""
