@@ -721,12 +721,6 @@ class StateOpen:
     read_task: asyncio.Task[WSMessage]
     """the task responsible for reading the next message from the websocket"""
 
-    popleft_unsent_notifications_task: Optional[asyncio.Task[InternalMessage]]
-    """if there is a task to remove the next unsent notification, that task, otherwise None"""
-
-    popleft_management_tasks_task: Optional[asyncio.Task[ManagementTask]]
-    """if there is a task to remove the next management task, that task, otherwise None"""
-
 
 @fast_dataclass
 class StateWaitingRetry:
