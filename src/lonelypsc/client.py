@@ -22,6 +22,8 @@ from typing import (
     overload,
 )
 
+from lonelypsp.util.drainable_asyncio_queue import DrainableAsyncioQueue
+
 from lonelypsc.types.sync_io import (
     SyncReadableBytesIO,
     SyncStandardIO,
@@ -259,7 +261,7 @@ class _PubSubClientSubscriptionStateEnteredBuffering:
     status: "PubSubClientConnectionStatus"
     """The last connection status that we handled"""
 
-    status_queue: asyncio.Queue["PubSubClientConnectionStatus"]
+    status_queue: DrainableAsyncioQueue["PubSubClientConnectionStatus"]
     """When the status changes we push the new status to this queue as we need
     to process them in order.
     """
@@ -280,10 +282,10 @@ class _PubSubClientSubscriptionStateEnteredBuffering:
     glob: Dict[str, int]
     """The glob -> subscription id pairs we are subscribed to"""
 
-    buffer: asyncio.Queue[PubSubClientMessageWithCleanup]
+    buffer: DrainableAsyncioQueue[PubSubClientMessageWithCleanup]
     """the buffer that we push matching messages to such that they are read by anext"""
 
-    cleanup: asyncio.Queue[PubSubClientMessageWithCleanup]
+    cleanup: DrainableAsyncioQueue[PubSubClientMessageWithCleanup]
     """the messages that haven't been cleaned up yet but need to be; this is normally cleared
     out when calling anext on the iterator, but the last item has to be cleaned out when the
     subscription is exited
@@ -519,24 +521,14 @@ class PubSubClientSubscription:
                     if exc is None:
                         exc = e
 
-                while True:
-                    try:
-                        message = state.buffer.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-
+                for message in state.buffer.drain():
                     try:
                         await message.cleanup()
                     except BaseException as e:
                         if exc is None:
                             exc = e
 
-                while True:
-                    try:
-                        message = state.cleanup.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-
+                for message in state.cleanup.drain():
                     try:
                         await message.cleanup()
                     except BaseException as e:
@@ -742,12 +734,18 @@ class PubSubClientSubscription:
             )
 
             status = PubSubClientConnectionStatus.LOST
-            status_queue: asyncio.Queue[PubSubClientConnectionStatus] = asyncio.Queue()
+            status_queue: DrainableAsyncioQueue[PubSubClientConnectionStatus] = (
+                DrainableAsyncioQueue()
+            )
             if state.client.receiver.connection_status != status:
                 status_queue.put_nowait(state.client.receiver.connection_status)
 
-            buffer: asyncio.Queue[PubSubClientMessageWithCleanup] = asyncio.Queue()
-            cleanup: asyncio.Queue[PubSubClientMessageWithCleanup] = asyncio.Queue()
+            buffer: DrainableAsyncioQueue[PubSubClientMessageWithCleanup] = (
+                DrainableAsyncioQueue()
+            )
+            cleanup: DrainableAsyncioQueue[PubSubClientMessageWithCleanup] = (
+                DrainableAsyncioQueue()
+            )
             self.state = _PubSubClientSubscriptionStateEnteredBuffering(
                 type=_STATE_ENTERED_BUFFERING,
                 client=state.client,

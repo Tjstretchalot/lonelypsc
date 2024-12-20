@@ -300,7 +300,7 @@ class InternalMessageStateCallback(Protocol):
     details on what each state means
     """
 
-    async def __call__(self, state: InternalMessageState) -> None:
+    async def __call__(self, state: InternalMessageState, /) -> None:
         pass
 
 
@@ -520,6 +520,9 @@ class ReceivedSmallMessage:
     data: bytes
     """the uncompressed message data"""
 
+    sha512: bytes
+    """the trusted 64-byte hash of the data"""
+
 
 @fast_dataclass
 class ReceivedLargeMessage:
@@ -538,6 +541,9 @@ class ReceivedLargeMessage:
     """the readable, seekable, tellable, closeable stream that the message data can
     be read from
     """
+
+    sha512: bytes
+    """the trusted 64-byte hash of the data"""
 
 
 ReceivedMessage = Union[ReceivedSmallMessage, ReceivedLargeMessage]

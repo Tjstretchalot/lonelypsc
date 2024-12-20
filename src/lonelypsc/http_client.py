@@ -692,6 +692,10 @@ if TYPE_CHECKING:
 
 
 def HttpPubSubClient(config: HttpPubSubConfig) -> PubSubClient:
+    """A constructor-like function that creates a pub sub client that connects
+    via outgoing HTTP calls and receives notifications via incoming HTTP calls
+    """
+
     async def setup() -> None:
         await config.setup_incoming_auth()
         try:
