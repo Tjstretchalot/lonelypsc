@@ -188,8 +188,6 @@ async def _check_read_task(state: StateConfiguring) -> CheckStateChangerResult:
             received=DrainableAsyncioQueue(max_size=state.config.max_received),
             send_task=state.send_task,
             read_task=make_websocket_read_task(state.websocket),
-            popleft_unsent_notifications_task=None,
-            popleft_management_tasks_task=None,
         ),
     )
 
