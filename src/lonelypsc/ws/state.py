@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Iterator, List, Literal, Optional, Protocol, Set, Union
+from typing import Any, Iterator, List, Literal, Optional, Protocol, Set, Union
 
 from aiohttp import ClientSession, ClientWebSocketResponse
 from lonelypsp.compat import fast_dataclass
@@ -472,31 +472,6 @@ Acknowledgement = Union[
 ]
 
 
-@fast_dataclass
-class ReceiveStreamState:
-    """Keeps track of the combined state of the last related RECEIVE_STREAM messages
-    from the broadcaster that have been processed.
-    """
-
-    identifier: bytes
-    """the message identifier chosen arbitrarily by the broadcaster"""
-
-    first: Union[B2S_ReceiveStreamStartUncompressed, B2S_ReceiveStreamStartCompressed]
-    """The first stream message with this id, with the payload stripped out"""
-
-    part_id: int
-    """The last part id that the subscriber received"""
-
-    body_hasher: "hashlib._Hash"
-    """the hash object that is producing the sha512 hash of the body as it comes in"""
-
-    body: SyncIOBaseLikeIO
-    """a writable, seekable, tellable, closeable file-like object where the subscriber
-    is storing the body of the message as it comes in. closing this file will delete 
-    the data
-    """
-
-
 class ReceivedMessageType(Enum):
     """Discriminator value for `ReceivedMessage.type`"""
 
@@ -547,6 +522,131 @@ class ReceivedLargeMessage:
 
 
 ReceivedMessage = Union[ReceivedSmallMessage, ReceivedLargeMessage]
+
+
+class ReceivingState(Enum):
+    """Discriminator value for `StateOpen.receiving`"""
+
+    INCOMPLETE = auto()
+    """Waiting for the rest of the message to come in"""
+
+    AUTHORIZING = auto()
+    """Waiting for the authorization task to complete"""
+
+    WAITING_COMPRESSOR = auto()
+    """Waiting for the compressor to be ready"""
+
+    DECOMPRESSING = auto()
+    """Decompressing the message"""
+
+
+@dataclass
+class ReceivingIncomplete:
+    """
+    The subscriber has received part of a message via a RECEIVE_STREAM and is
+    waiting for more to come in. The subscriber is hashing the message as it
+    comes in, and may have not finished verifying the provided authorization.
+    The subscriber hasn't confirmed the hash from the first message yet, since
+    that requires the entire message to be received, so the authorization check
+    is tentative anyway
+    """
+
+    type: Literal[ReceivingState.INCOMPLETE]
+    """disciminator value"""
+
+    first: Union[B2S_ReceiveStreamStartUncompressed, B2S_ReceiveStreamStartCompressed]
+    """The first stream message with this id, with the payload stripped out"""
+
+    part_id: int
+    """The last part id that the subscriber received"""
+
+    body_hasher: "hashlib._Hash"
+    """the hash object that is producing the sha512 hash of the body as it comes in"""
+
+    body: SyncIOBaseLikeIO
+    """a writable, seekable, tellable, closeable file-like object where the
+    subscriber is storing the potentially compressed body of the message as it
+    comes in. closing this file will delete the data
+    """
+
+    authorization_task: Optional[
+        asyncio.Task[Literal["ok", "unauthorized", "forbidden", "unavailable"]]
+    ]
+    """the task checking if the authorization on the first message is valid or None
+    if the task completed, was already checked, and was "ok"
+    """
+
+
+@fast_dataclass
+class ReceivingAuthorizing:
+    """We have received the entire message via RECEIVE_STREAM calls, verified that the
+    hash matches what was provided, and are waiting for the authorization task to complete
+    before proceeding
+
+    the message has already been ack'd (or at least the ack has been queued) at this point
+    """
+
+    type: Literal[ReceivingState.AUTHORIZING]
+    """disciminator value"""
+
+    first: Union[B2S_ReceiveStreamStartUncompressed, B2S_ReceiveStreamStartCompressed]
+    """The first stream message with this id, with the payload stripped out"""
+
+    body: SyncIOBaseLikeIO
+    """a readable, seekable, tellable, closeable file-like object where the
+    subscriber stored the potentially compressed body of the message as it came
+    in. closing this file will delete the data
+    """
+
+    authorization_task: asyncio.Task[
+        Literal["ok", "unauthorized", "forbidden", "unavailable"]
+    ]
+    """the task the subscriber is waiting on to finish checking the messages authorization"""
+
+
+@fast_dataclass
+class ReceivingWaitingCompressor:
+    """
+    The subscriber has received the entire message via one or more
+    RECEIVE_STREAM calls, verified that the hash matches what was provided,
+    verified the authorization provided, and is waiting for the compressor to be
+    ready
+    """
+
+    type: Literal[ReceivingState.WAITING_COMPRESSOR]
+    """disciminator value"""
+
+    first: B2S_ReceiveStreamStartCompressed
+    """The first stream message with this id, with the payload stripped out"""
+
+    compressed_body: SyncIOBaseLikeIO
+    """a readable, seekable, tellable, closeable file-like object where the subscriber
+    stored the compressed body of the message as it came in. closing this file will delete
+    the data
+    """
+
+
+@fast_dataclass
+class ReceivingDecompressing:
+    """
+    The subscriber has received the entire message via one or more
+    RECEIVE_STREAM calls, verified that the hash matches what was provided,
+    verified the authorization, and is decompressing the message
+    """
+
+    type: Literal[ReceivingState.DECOMPRESSING]
+    """disciminator value"""
+
+    task: asyncio.Task[ReceivedMessage]
+    """the task that will produce the received message"""
+
+
+Receiving = Union[
+    ReceivingIncomplete,
+    ReceivingAuthorizing,
+    ReceivingWaitingCompressor,
+    ReceivingDecompressing,
+]
 
 
 @fast_dataclass
@@ -629,6 +729,16 @@ class StateOpen:
     broadcaster: PubSubBroadcasterConfig
     """the broadcaster that the websocket is connected to"""
 
+    broadcaster_counter: int
+    """A counter that is incremented whenever the broadcaster could use a url to
+    generate an authorization code
+    """
+
+    subscriber_counter: int
+    """A counter that is decremented whenever the subscriber could use a url to
+    generate an authorization code
+    """
+
     nonce_b64: str
     """the agreed unique identifier for this connection, that combines the
     subscribers contribution and the broadcasters contribution, both of which
@@ -650,7 +760,7 @@ class StateOpen:
 
     unsent_notifications: DrainableAsyncioQueue[InternalMessage]
     """the unsent messages that should be sent to the broadcaster via NOTIFY / NOTIFY STREAM
-    in this order
+    in this order. 
     """
 
     resending_notifications: List[InternalMessage]
@@ -672,7 +782,8 @@ class StateOpen:
 
     sent_notifications: BoundedDeque[InternalMessage]
     """the messages that have been sent to the broadcaster but not acknowledged,
-    in the order they are expected to be acknowledged.
+    in the order they are expected to be acknowledged. the last message in this
+    list may only have been partially sent
 
     NOTE: this list is just a subset of `expected_acks` in the following sense:
         - `len(sent_notifications) <= len(expected_acks)`
@@ -688,12 +799,12 @@ class StateOpen:
     """
 
     exact_subscriptions: Set[bytes]
-    """the topics the subscriber is subscribed to BEFORE all management tasks are
-    completed; this is used for restoring the state if the connection is lost
+    """the topics the subscriber is subscribed to BEFORE all management tasks/acks; 
+    this is used for restoring the state if the connection is lost
     """
 
     glob_subscriptions: Set[str]
-    """the glob patterns the subscriber is susbcribed to BEFORE all management tasks
+    """the glob patterns the subscriber is susbcribed to BEFORE all management tasks/acks
     are completed; this is used for restoring the state if the connection is lost
     """
 
@@ -708,6 +819,20 @@ class StateOpen:
     is an error.
     """
 
+    receiving: Optional[Receiving]
+    """if the subscriber has received some part of a notification but knows theres
+    more to come or hasn't finished processing it, the state of that receiving
+    notification, otherwise None. the broadcaster MUST always finish the last
+    notification before sending a new one, and the subscriber does not try to
+    read additional messages while processing the previous receive stream, so
+    only one notification can be in this state at a time
+    """
+
+    unsent_acks: BoundedDeque[Union[bytes, bytearray]]
+    """Outgoing acknowledgements that need to be sent, in the order they need to
+    be sent, already formatted and ready for send_bytes
+    """
+
     received: DrainableAsyncioQueue[ReceivedMessage]
     """the messages that have been received from the broadcaster but not yet
     consumed; it's expected that this is consumed from outside the state machine
@@ -720,6 +845,11 @@ class StateOpen:
 
     read_task: asyncio.Task[WSMessage]
     """the task responsible for reading the next message from the websocket"""
+
+    backgrounded: Set[asyncio.Task[Any]]
+    """tasks which have been scheduled by the state machine and if they error should
+    be treated as irrecoverable, but whose result otherwise is unimportant
+    """
 
 
 @fast_dataclass

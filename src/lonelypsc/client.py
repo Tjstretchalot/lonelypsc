@@ -825,6 +825,12 @@ class PubSubError(Exception):
     """Base class for pub/sub exceptions"""
 
 
+class PubSubIrrecoverableError(BaseException):
+    """Base class for pub/sub exceptions that should prevent retries but aren't one
+    of the standard base exceptions
+    """
+
+
 class PubSubRequestError(PubSubError):
     """An error occurred while making a request to the pub/sub server"""
 

@@ -211,6 +211,17 @@ class WebsocketGenericConfig(Protocol):
         to ensure the subscriber can keep up with the incoming messages.
         """
 
+    @property
+    def max_unsent_acks(self) -> Optional[int]:
+        """The maximum number of unsent acknowledgements from the subscriber
+        to the broadcaster before disconnecting because connection cannot keep
+        up
+
+        This is an unlikely failure point since the broadcaster is expected to
+        be waiting for acknowledgements before sending an excessive number of
+        messages, and thus this is intended just as a sanity check
+        """
+
 
 class WebsocketGenericConfigFromParts:
     """Convenience class to construct an object fulfilling the WebsocketGenericConfig
@@ -229,6 +240,7 @@ class WebsocketGenericConfigFromParts:
         max_unsent_notifications: Optional[int],
         max_expected_acks: Optional[int],
         max_received: Optional[int],
+        max_unsent_acks: Optional[int],
     ):
         self.max_websocket_message_size = max_websocket_message_size
         self.websocket_open_timeout = websocket_open_timeout
@@ -240,6 +252,7 @@ class WebsocketGenericConfigFromParts:
         self.max_unsent_notifications = max_unsent_notifications
         self.max_expected_acks = max_expected_acks
         self.max_received = max_received
+        self.max_unsent_acks = max_unsent_acks
 
 
 if TYPE_CHECKING:
@@ -458,6 +471,10 @@ class WebsocketPubSubConfigFromParts:
         return self.generic.max_received
 
     @property
+    def max_unsent_acks(self) -> Optional[int]:
+        return self.generic.max_unsent_acks
+
+    @property
     def allow_compression(self) -> bool:
         return self.compression.allow_compression
 
@@ -556,6 +573,7 @@ def make_websocket_pub_sub_config(
     max_unsent_notifications: Optional[int],
     max_expected_acks: Optional[int],
     max_received: Optional[int],
+    max_unsent_acks: Optional[int],
     allow_compression: bool,
     compression_dictionary_by_id: "Dict[int, Tuple[zstandard.ZstdCompressionDict, int]]",
     initial_compression_dict_id: Optional[int],
@@ -587,6 +605,7 @@ def make_websocket_pub_sub_config(
             max_unsent_notifications=max_unsent_notifications,
             max_expected_acks=max_expected_acks,
             max_received=max_received,
+            max_unsent_acks=max_unsent_acks,
         ),
         compression=WebsocketCompressionConfigFromParts(
             allow_compression=allow_compression,

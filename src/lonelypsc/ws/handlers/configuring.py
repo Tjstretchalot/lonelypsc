@@ -3,9 +3,8 @@ import base64
 import hashlib
 import io
 import time
-from typing import TYPE_CHECKING, Literal, Union, cast
+from typing import TYPE_CHECKING, cast
 
-from lonelypsp.compat import fast_dataclass
 from lonelypsp.stateful.constants import BroadcasterToSubscriberStatefulMessageType
 from lonelypsp.stateful.messages.confirm_configure import B2S_ConfirmConfigureParser
 from lonelypsp.stateful.parser_helpers import parse_b2s_message_prefix
@@ -13,7 +12,12 @@ from lonelypsp.util.bounded_deque import BoundedDeque
 from lonelypsp.util.drainable_asyncio_queue import DrainableAsyncioQueue
 
 from lonelypsc.types.websocket_message import WSMessageBytes
-from lonelypsc.ws.check_result import CheckResult
+from lonelypsc.ws.check_result import (
+    CheckResult,
+    CheckStateChangerResult,
+    CheckStateChangerResultContinue,
+    CheckStateChangerResultDone,
+)
 from lonelypsc.ws.compressor import CompressorStoreImpl
 from lonelypsc.ws.handlers.protocol import StateHandler
 from lonelypsc.ws.state import (
@@ -33,22 +37,6 @@ from lonelypsc.ws.state import (
     StateType,
 )
 from lonelypsc.ws.util import make_websocket_read_task
-
-
-@fast_dataclass
-class CheckStateChangerResultContinue:
-    type: Literal[CheckResult.CONTINUE]
-
-
-@fast_dataclass
-class CheckStateChangerResultDone:
-    type: Literal[CheckResult.RESTART]
-    state: State
-
-
-CheckStateChangerResult = Union[
-    CheckStateChangerResultContinue, CheckStateChangerResultDone
-]
 
 
 async def handle_configuring(state: State) -> State:
@@ -170,6 +158,8 @@ async def _check_read_task(state: StateConfiguring) -> CheckStateChangerResult:
             config=state.config,
             cancel_requested=state.cancel_requested,
             broadcaster=state.broadcaster,
+            broadcaster_counter=1,
+            subscriber_counter=-1,
             nonce_b64=base64.b64encode(connection_nonce).decode("ascii"),
             websocket=state.websocket,
             retry=OpenRetryInformationTentative(
@@ -185,9 +175,12 @@ async def _check_read_task(state: StateConfiguring) -> CheckStateChangerResult:
             glob_subscriptions=set(),
             management_tasks=management_tasks,
             expected_acks=BoundedDeque(maxlen=state.config.max_expected_acks),
+            receiving=None,
             received=DrainableAsyncioQueue(max_size=state.config.max_received),
+            unsent_acks=BoundedDeque(maxlen=state.config.max_unsent_acks),
             send_task=state.send_task,
             read_task=make_websocket_read_task(state.websocket),
+            backgrounded=set(),
         ),
     )
 
