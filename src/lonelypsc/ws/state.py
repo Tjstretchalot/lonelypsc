@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any, Iterator, List, Literal, Optional, Protocol, Set, Union
 
+import aiohttp
 from aiohttp import ClientSession, ClientWebSocketResponse
 from lonelypsp.compat import fast_dataclass
 from lonelypsp.stateful.messages.confirm_notify import B2S_ConfirmNotify
@@ -298,10 +299,66 @@ class InternalMessageStateCallback(Protocol):
     (e.g., from unsent to sent, from sent to acknowledged, from any to dropped,
     etc). See the documentation for the `InternalMessageStateType` enum for
     details on what each state means
+
+    It is guarranteed that within a single message this callback is not invoked
+    concurrently, so e.g. the following implementation will always produce a
+    valid ordering of internal message states:
+
+    ```python
+    async def my_callback(state: InternalMessageState) -> None:
+        await asyncio.sleep(random.random())  # simulates network io
+        print(f"state: {state.type}")  # stdout ordered correctly
+    ```
+
+    Note that for the most part a valid ordering just means that a final state
+    will be printed last, i.e., `UNSENT -> SENT -> ACKNOWLEDGED`, or possibly
+    `UNSENT -> ACKNOWLEDGED` (skipping an intermediate state), but definitely
+    *not* `UNSENT -> ACKNOWLEDGED -> SENT`
     """
 
     async def __call__(self, state: InternalMessageState, /) -> None:
         pass
+
+
+@dataclass
+class InternalMessageStateAndCallback:
+    """Keeps track of what state a callback was last scheduled for on the
+    event loop, the running task for the callback (if any), and the the queued
+    state for the callback
+
+    By not weaving multiple calls to the same callback together it is easier
+    to reason about recovery when using this library; the alternative is that
+    this library only promises the order that the callbacks are scheduled is
+    consistent, but if e.g. logging is async this easily leads to subtle bugs
+    that are hard to distinguish from errors within the library
+    """
+
+    state: InternalMessageState
+    """the last state passed to the callback; if task is set, this is the
+    state sent to the callback that the task is tracking
+    """
+
+    callback: InternalMessageStateCallback
+    """the actual callback function"""
+
+    task: Optional[asyncio.Task[None]]
+    """the task that is running the callback right now, if any. the state can only
+    be changed if this task is None or from within this task
+    """
+
+    queued: Optional[
+        Union[
+            InternalMessageStateUnsent,
+            InternalMessageStateSent,
+            InternalMessageStateResending,
+        ]
+    ]
+    """the most recent intermediate state for the callback, or None if the
+    callback knows about the most recent intermediate state.
+
+    NOTE: the final state is handled differently and, at that point there are
+    assumed to be no lingering references to this object
+    """
 
 
 @fast_dataclass
@@ -328,10 +385,8 @@ class InternalSmallMessage:
     sha512: bytes
     """the trusted 64-byte hash of the data"""
 
-    callback: InternalMessageStateCallback
-    """the callback when the state changes; the current state of the message is
-    assumed to be stored separately (which allows this dataclass to be frozen)
-    """
+    callback: InternalMessageStateAndCallback
+    """the state of the callback and the callback for this message"""
 
 
 @fast_dataclass
@@ -350,6 +405,9 @@ class InternalLargeMessage:
     stream: SyncStandardIO
     """the readable, seekable, tellable stream that the message data is read from
 
+    no read() calls that would read past the indicated length from the stream will 
+    be made
+
     this stream is never closed by the state machine, but the caller is alerted
     to if its functions will be called via the callback field (for
     example, if this stream can be reopened the caller could e.g. close in SENT
@@ -365,10 +423,8 @@ class InternalLargeMessage:
     sha512: bytes
     """the trusted 64-byte SHA512 hash of the data"""
 
-    callback: InternalMessageStateCallback
-    """the callback when the state changes; the current state of the message is
-    assumed to be stored separately (which allows this dataclass to be frozen)
-    """
+    callback: InternalMessageStateAndCallback
+    """the state of the callback and the callback for this message"""
 
 
 InternalMessage = Union[InternalSmallMessage, InternalLargeMessage]
@@ -649,6 +705,93 @@ Receiving = Union[
 ]
 
 
+class SendingState(Enum):
+    """Discriminator value for `StateOpen.sending`"""
+
+    SIMPLE = auto()
+    """The subscriber is sending a simple message and no additional cleanup work
+    is needed
+    """
+
+    MANAGEMENT_TASK = auto()
+    """The subscriber is sending a management task; this may take multiple event
+    loops to build the authorization part of the message
+    """
+
+    INTERNAL_MESSAGE = auto()
+    """The subscriber is sending an internal message which MIGHT be in the ack queue,
+    but it also might not be. When cleaning up, if the message isn't found in the ack
+    queue (by identifier), it should be treated as a SENT notification and have its
+    status callback called
+    """
+
+
+@fast_dataclass
+class SendingSimple:
+    """The subscriber is sending a message that was entirely deduced before being sent
+    and did not involve acks
+    """
+
+    type: Literal[SendingState.SIMPLE]
+    """discriminator value"""
+    task: asyncio.Task[None]
+    """the task that is sending the message"""
+
+
+@fast_dataclass
+class SendingManagementTask:
+    """The subscriber is performing a management task; the management task is
+    added to `expected_acks` before the task is started, meaning it can be
+    acknowledged normally before this completes, without a need to delay as
+    the state is not ever ambiguous
+    """
+
+    type: Literal[SendingState.MANAGEMENT_TASK]
+    """discriminator value"""
+    management_task: ManagementTask
+    """the management task that is being sent"""
+    task: asyncio.Task[None]
+    """the task that is sending the message"""
+
+
+@fast_dataclass
+class SendingInternalMessage:
+    """The subscriber is sending an internal message that may or may not be in the
+    ack queue
+    """
+
+    type: Literal[SendingState.INTERNAL_MESSAGE]
+    """discriminator value"""
+    task: asyncio.Task[None]
+    """the task that is sending the message"""
+    internal_message: InternalMessage
+    """the message that is being sent
+
+    ## callback
+
+    if the task is not done or failed, the callback could think it is in any of these states:
+    - UNSENT
+    - RESENDING
+    - SENT
+
+    if the task is done and successful, the callback will think it is in SENT. to ensure
+    this is the case, the read task will not progress if it receives an acknowledgement
+    for the message that is still in sending, as otherwise it would be possible the callback
+    thinks the message is in ACKNOWLEDGED, which would be an issue when recovering (ACKNOWLEDGED
+    must never change state to RESENDING)
+
+    ## location in state
+
+    if the task is not done or raised an error, the message may be nowhere. otherwise, it
+    will be in expected_acks and sent_notifications. this can only be guarranteed because
+    the read task will not progress if it receives an acknowledgement for the message that
+    is still in sending
+    """
+
+
+Sending = Union[SendingSimple, SendingManagementTask, SendingInternalMessage]
+
+
 @fast_dataclass
 class StateConnecting:
     """the variables when in the CONNECTING state"""
@@ -658,6 +801,12 @@ class StateConnecting:
 
     config: WebsocketPubSubConfig
     """how the subscriber is configured"""
+
+    client_session: aiohttp.ClientSession
+    """the client session the websocket is being connected by means of"""
+
+    websocket_task: asyncio.Task[ClientWebSocketResponse]
+    """the task that is connecting to the broadcaster"""
 
     cancel_requested: asyncio.Event
     """if set, the state machine should move to closed as soon as possible"""
@@ -670,6 +819,16 @@ class StateConnecting:
 
     tasks: TasksOnceOpen
     """the tasks that need to be performed after configuring the stream"""
+
+    backgrounded: Set[asyncio.Task[Any]]
+    """
+    tasks that have been scheduled and if they error it's not recoverable, but
+    the result isnt otherwise important. the most prominent example is informing
+    callbacks on internal messages
+
+    these shouldnt be canceled unless the state machine is moving to CLOSED; i.e.,
+    retries should not cause these tasks to be canceled
+    """
 
 
 @dataclass
@@ -708,6 +867,16 @@ class StateConfiguring:
 
     read_task: asyncio.Task[WSMessage]
     """the task for reading the next message from the websocket"""
+
+    backgrounded: Set[asyncio.Task[Any]]
+    """
+    tasks that have been scheduled and if they error it's not recoverable, but
+    the result isnt otherwise important. the most prominent example is informing
+    callbacks on internal messages
+
+    these shouldnt be canceled unless the state machine is moving to CLOSED; i.e.,
+    retries should not cause these tasks to be canceled
+    """
 
 
 @dataclass
@@ -760,30 +929,29 @@ class StateOpen:
 
     unsent_notifications: DrainableAsyncioQueue[InternalMessage]
     """the unsent messages that should be sent to the broadcaster via NOTIFY / NOTIFY STREAM
-    in this order. 
+    in this order. Since these notifications are in UNSENT with nothing queued it's not
+    necessary to sweep the internal message state callbacks for these messages
     """
 
     resending_notifications: List[InternalMessage]
     """the resending messages that should be sent to the broadcaster via NOTIFY / NOTIFY STREAM
-    in this order
+    in this order. the internal message state callbacks need to be swept consistently
 
     NOTE: the subscriber never retries a message within the same websocket connection,
     so it cannot receive acknowledgements for these messages. if the broadcaster does
     not acknowledge a notification in time the connection is closed. thus, the distinction
-    between unsent and resending here is only to handle if a message was sent in a previous
-    connection, then is not sent in this connection before disconnecting, and then no
-    more retries are attempted, in which case the message should be to `DROPPED_SENT` for
-    resending_notifications (instead of `DROPPED_UNSENT` for unsent_notifications) so that
-    the caller knows the message _may_ have been processed
+    between unsent and resending here is only to distinguish which need to be swept and
+    which don't
 
     NOTE: resending notifications are always handled before sent notifications, so this
-    empties out at the beginning of the connection and never refills
+    empties out at the beginning of the connection and never refills, meaning the linear
+    pass through this list is generally a no-op
     """
 
     sent_notifications: BoundedDeque[InternalMessage]
     """the messages that have been sent to the broadcaster but not acknowledged,
     in the order they are expected to be acknowledged. the last message in this
-    list may only have been partially sent
+    list may only have been partially sent. these need to be swept regularly
 
     NOTE: this list is just a subset of `expected_acks` in the following sense:
         - `len(sent_notifications) <= len(expected_acks)`
@@ -810,7 +978,8 @@ class StateOpen:
 
     management_tasks: DrainableAsyncioQueue[ManagementTask]
     """the management tasks that need to be performed in the order they need to be
-    performed
+    performed; these have not had their ack added to expected_acks and have not
+    been applied to `exact_subscriptions`/`glob_subscriptions` yet
     """
 
     expected_acks: BoundedDeque[Acknowledgement]
@@ -820,12 +989,12 @@ class StateOpen:
     """
 
     receiving: Optional[Receiving]
-    """if the subscriber has received some part of a notification but knows theres
-    more to come or hasn't finished processing it, the state of that receiving
-    notification, otherwise None. the broadcaster MUST always finish the last
-    notification before sending a new one, and the subscriber does not try to
-    read additional messages while processing the previous receive stream, so
-    only one notification can be in this state at a time
+    """if the subscriber has received some part of a notification
+    but knows theres more to come or hasn't finished processing it, the state of
+    that receiving notification, otherwise None. the broadcaster MUST always
+    finish the last notification before sending a new one, and the subscriber
+    does not try to read additional messages while processing the previous
+    receive stream, so only one notification can be in this state at a time.
     """
 
     unsent_acks: BoundedDeque[Union[bytes, bytearray]]
@@ -838,7 +1007,7 @@ class StateOpen:
     consumed; it's expected that this is consumed from outside the state machine
     """
 
-    send_task: Optional[asyncio.Task[None]]
+    sending: Optional[Sending]
     """the task which has exclusive access to `send_bytes`, if any, otherwise
     None
     """
@@ -847,8 +1016,13 @@ class StateOpen:
     """the task responsible for reading the next message from the websocket"""
 
     backgrounded: Set[asyncio.Task[Any]]
-    """tasks which have been scheduled by the state machine and if they error should
-    be treated as irrecoverable, but whose result otherwise is unimportant
+    """
+    tasks that have been scheduled and if they error it's not recoverable, but
+    the result isnt otherwise important. the most prominent example is informing
+    callbacks on internal messages
+
+    these shouldnt be canceled unless the state machine is moving to CLOSED; i.e.,
+    retries should not cause these tasks to be canceled
     """
 
 
@@ -874,6 +1048,16 @@ class StateWaitingRetry:
     retry_at: float
     """the time in fractional seconds from the epoch (as if by `time.time()`)
     before proceeding to the next attempt
+    """
+
+    backgrounded: Set[asyncio.Task[Any]]
+    """
+    tasks that have been scheduled and if they error it's not recoverable, but
+    the result isnt otherwise important. the most prominent example is informing
+    callbacks on internal messages
+
+    these shouldnt be canceled unless the state machine is moving to CLOSED; i.e.,
+    retries should not cause these tasks to be canceled
     """
 
 
@@ -902,6 +1086,16 @@ class StateClosing:
     retry: ClosingRetryInformation
     """determines if and how the subscriber will retry connecting to
     a broadcaster once the websocket is done closing
+    """
+
+    backgrounded: Set[asyncio.Task[Any]]
+    """
+    tasks that have been scheduled and if they error it's not recoverable, but
+    the result isnt otherwise important. the most prominent example is informing
+    callbacks on internal messages
+
+    these shouldnt be canceled unless the state machine is moving to CLOSED; i.e.,
+    retries should not cause these tasks to be canceled
     """
 
 

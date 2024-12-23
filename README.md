@@ -223,3 +223,5 @@ Things not designed yet but need to be handled:
   websocket protocol, which will allow users of the library to decide to skip the other
   authorization handshakes within the websocket if there is another way to confirm the packets
   are from the same sender (i.e., TLS), plus making certain DoS attacks more difficult
+
+- make sure update copy send_task -> sending

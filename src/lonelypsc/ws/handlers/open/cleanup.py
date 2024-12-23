@@ -1,17 +1,24 @@
-from typing import List
+import asyncio
+from typing import Any, List, Set
 
 from lonelypsp.stateful.constants import BroadcasterToSubscriberStatefulMessageType
 
 from lonelypsc.config.config import BroadcastersShuffler
 from lonelypsc.util.errors import combine_multiple_exceptions
+from lonelypsc.ws.internal_callbacks import (
+    inform_internal_message,
+)
 from lonelypsc.ws.state import (
     ClosingRetryInformationCannotRetry,
     ClosingRetryInformationType,
     ClosingRetryInformationWantRetry,
+    InternalMessageStateSent,
+    InternalMessageStateType,
     OpenRetryInformationType,
     ReceivedMessageType,
     ReceivingState,
     RetryInformation,
+    SendingState,
     StateClosing,
     StateOpen,
     StateType,
@@ -55,17 +62,20 @@ async def cleanup_open(
                         context=exception,
                     )
 
-    if state.send_task is not None:
-        state.send_task.cancel()
+    if state.sending is not None:
+        state.sending.task.cancel()
 
     state.read_task.cancel()
 
     backgrounded_errors: List[BaseException] = []
+    continuing_backgrounded: Set[asyncio.Task[Any]] = set()
     for task in state.backgrounded:
-        if not task.cancel():
+        if task.done():
             exc = task.exception()
             if exc is not None:
                 backgrounded_errors.append(exc)
+        else:
+            continuing_backgrounded.add(task)
 
     if backgrounded_errors:
         irrecoverable = True
@@ -86,6 +96,31 @@ async def cleanup_open(
         resending_notifications=state.resending_notifications
         + list(state.sent_notifications),
     )
+
+    if (
+        state.sending is not None
+        and state.sending.type == SendingState.INTERNAL_MESSAGE
+        and not any(
+            m.identifier == state.sending.internal_message.identifier
+            for m in state.sent_notifications
+        )
+    ):
+        tasks_once_open.resending_notifications.append(state.sending.internal_message)
+
+    for internal_message in tasks_once_open.resending_notifications:
+        # intentionally SENT to indicate that the file stream can be closed and
+        # reopened once the message is about to be sent (which will inform it
+        # that it is in RESENDING)
+        #
+        # relies on inform_internal_message not making unnecessary calls if the
+        # state already matches
+        #
+        # also will get switched to DROPPED_SENT before scheduling the task if
+        # not retrying, and if retrying will be swept while progressing the state
+        inform_internal_message(
+            internal_message,
+            InternalMessageStateSent(type=InternalMessageStateType.SENT),
+        )
 
     while state.expected_acks:
         ack = state.expected_acks.popleft()
@@ -140,4 +175,5 @@ async def cleanup_open(
                 exception=exception,
             )
         ),
+        backgrounded=continuing_backgrounded,
     )

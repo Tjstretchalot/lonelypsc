@@ -5,9 +5,11 @@ from lonelypsp.stateful.messages.confirm_notify import B2S_ConfirmNotify
 
 from lonelypsc.client import PubSubError, PubSubIrrecoverableError
 from lonelypsc.ws.handlers.open.messages.protocol import MessageChecker
+from lonelypsc.ws.internal_callbacks import finalize_internal_callback
 from lonelypsc.ws.state import (
-    InternalMessageStateSent,
+    InternalMessageStateAcknowledged,
     InternalMessageStateType,
+    SendingState,
     StateOpen,
 )
 
@@ -42,10 +44,25 @@ def check_confirm_notify(state: StateOpen, message: B2S_ConfirmNotify) -> None:
             f"invariant violated: expected {expected.type} {message.identifier!r}, got {internal_message.identifier!r}"
         )
 
+    if (
+        state.sending is not None
+        and state.sending.type == SendingState.INTERNAL_MESSAGE
+        and state.sending.internal_message.identifier == message.identifier
+    ):
+        assert (
+            state.sending.internal_message is internal_message
+        ), "invariant violated: multiple copies with same identifier"
+        state.backgrounded.add(state.sending.task)
+        state.sending = None
+
     state.backgrounded.add(
         asyncio.create_task(
-            internal_message.callback(
-                InternalMessageStateSent(type=InternalMessageStateType.SENT)
+            finalize_internal_callback(
+                internal_message.callback,
+                InternalMessageStateAcknowledged(
+                    type=InternalMessageStateType.ACKNOWLEDGED,
+                    notified=message.subscribers,
+                ),
             )
         )
     )

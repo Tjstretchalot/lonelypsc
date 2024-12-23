@@ -3,7 +3,7 @@ import base64
 import hashlib
 import io
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, Set, cast
 
 from lonelypsp.stateful.constants import BroadcasterToSubscriberStatefulMessageType
 from lonelypsp.stateful.messages.confirm_configure import B2S_ConfirmConfigureParser
@@ -30,6 +30,8 @@ from lonelypsc.ws.state import (
     ManagementTaskType,
     OpenRetryInformationTentative,
     OpenRetryInformationType,
+    SendingSimple,
+    SendingState,
     State,
     StateClosing,
     StateConfiguring,
@@ -57,12 +59,16 @@ async def handle_configuring(state: State) -> State:
         if (result := await _check_cancel_requested(state)).type == CheckResult.RESTART:
             return result.state
 
+        if (result := _check_backgrounded(state)).type == CheckResult.RESTART:
+            return result.state
+
         wait_cancel_requested = asyncio.create_task(state.cancel_requested.wait())
         await asyncio.wait(
             [
                 state.read_task,
                 *([state.send_task] if state.send_task is not None else []),
                 wait_cancel_requested,
+                *state.backgrounded,
             ],
             return_when=asyncio.FIRST_COMPLETED,
         )
@@ -91,6 +97,7 @@ async def handle_configuring(state: State) -> State:
                     exception=e,
                 )
             ),
+            backgrounded=state.backgrounded,
         )
 
 
@@ -178,9 +185,13 @@ async def _check_read_task(state: StateConfiguring) -> CheckStateChangerResult:
             receiving=None,
             received=DrainableAsyncioQueue(max_size=state.config.max_received),
             unsent_acks=BoundedDeque(maxlen=state.config.max_unsent_acks),
-            send_task=state.send_task,
+            sending=(
+                None
+                if state.send_task is None
+                else SendingSimple(type=SendingState.SIMPLE, task=state.send_task)
+            ),
             read_task=make_websocket_read_task(state.websocket),
-            backgrounded=set(),
+            backgrounded=state.backgrounded,
         ),
     )
 
@@ -204,8 +215,42 @@ async def _check_cancel_requested(state: StateConfiguring) -> CheckStateChangerR
                 tasks=state.tasks,
                 exception=Exception("cancel requested"),
             ),
+            backgrounded=state.backgrounded,
         ),
     )
+
+
+def _check_backgrounded(state: StateConfiguring) -> CheckStateChangerResult:
+    if not any(task.done() for task in state.backgrounded):
+        return CheckStateChangerResultContinue(type=CheckResult.CONTINUE)
+
+    new_backgrounded: Set[asyncio.Task[Any]] = set()
+    for task in state.backgrounded:
+        if not task.done():
+            new_backgrounded.add(task)
+            continue
+
+        if task.exception() is not None:
+            return CheckStateChangerResultDone(
+                type=CheckResult.RESTART,
+                state=StateClosing(
+                    type=StateType.CLOSING,
+                    config=state.config,
+                    cancel_requested=state.cancel_requested,
+                    broadcaster=state.broadcaster,
+                    client_session=state.client_session,
+                    websocket=state.websocket,
+                    retry=ClosingRetryInformationCannotRetry(
+                        type=ClosingRetryInformationType.CANNOT_RETRY,
+                        tasks=state.tasks,
+                        exception=Exception("background task failed"),
+                    ),
+                    backgrounded=state.backgrounded,
+                ),
+            )
+
+    state.backgrounded = new_backgrounded
+    return CheckStateChangerResultDone(type=CheckResult.RESTART, state=state)
 
 
 async def _cleanup(state: StateConfiguring) -> None:

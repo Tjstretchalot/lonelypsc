@@ -91,7 +91,7 @@ def _decompress(
 
 def check_receiving_waiting_compressor(state: StateOpen) -> CheckResult:
     """
-    Tries to move receiving state `WAITING_COMPRESSOR` to `DECOMPRESSING`
+    Tries to move receiving notify state `WAITING_COMPRESSOR` to `DECOMPRESSING`
 
     Raises an error if it is not possible to decompress the message; since the
     subscriber is not checking the read_task, it won't parse `DISABLE_ZSTD_CUSTOM`

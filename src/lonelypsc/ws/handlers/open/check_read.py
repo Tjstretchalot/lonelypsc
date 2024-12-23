@@ -18,6 +18,7 @@ def check_read_task(state: StateOpen) -> CheckResult:
 
     Skips checking the read task if still processing the previous message
     """
+
     if (
         state.receiving is not None
         and state.receiving.type != ReceivingState.INCOMPLETE

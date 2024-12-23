@@ -4,7 +4,7 @@ from lonelypsc.ws.state import ReceivingState, StateOpen
 
 def check_receiving_decompressing(state: StateOpen) -> CheckResult:
     """
-    Tries to move from receiving state `DECOMPRESSING` to None
+    Tries to move from receiving notify state `DECOMPRESSING` to None
 
     Raises an exception if the decompression task fails
     """

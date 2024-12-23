@@ -17,6 +17,7 @@ from typing import (
     cast,
 )
 
+import aiohttp
 from lonelypsp.compat import fast_dataclass
 from lonelypsp.stateful.parser_helpers import read_exact
 from lonelypsp.util.async_queue_like import AsyncQueueLike
@@ -47,7 +48,9 @@ from lonelypsc.ws.state import (
     InternalLargeMessage,
     InternalMessage,
     InternalMessageState,
+    InternalMessageStateAndCallback,
     InternalMessageStateType,
+    InternalMessageStateUnsent,
     InternalMessageType,
     InternalSmallMessage,
     ManagementTask,
@@ -67,6 +70,7 @@ from lonelypsc.ws.state import (
     StateType,
     TasksOnceOpen,
 )
+from lonelypsc.ws.websocket_connect_task import make_websocket_connect_task
 
 
 @fast_dataclass
@@ -240,6 +244,7 @@ class WSPubSubConnectorReceiver:
         )
         broadcaster = next(retry.iterator)
 
+        client_session = aiohttp.ClientSession()
         self.state = CRStateSetup(
             type=CRStateType.SETUP,
             config=self.state.config,
@@ -252,6 +257,12 @@ class WSPubSubConnectorReceiver:
             ws_state=StateConnecting(
                 type=StateType.CONNECTING,
                 config=self.state.config,
+                client_session=client_session,
+                websocket_task=make_websocket_connect_task(
+                    config=self.state.config,
+                    broadcaster=broadcaster,
+                    client_session=client_session,
+                ),
                 cancel_requested=asyncio.Event(),
                 broadcaster=broadcaster,
                 retry=retry,
@@ -266,6 +277,7 @@ class WSPubSubConnectorReceiver:
                     ),
                     resending_notifications=[],
                 ),
+                backgrounded=set(),
             ),
             state_task=cast(asyncio.Task[None], None),  # order of initialization
         )
@@ -712,6 +724,14 @@ class WSPubSubConnectorReceiver:
         state_queue: DrainableAsyncioQueue[InternalMessageState] = (
             DrainableAsyncioQueue(max_size=1)
         )
+        callback = InternalMessageStateAndCallback(
+            state=InternalMessageStateUnsent(
+                type=InternalMessageStateType.UNSENT,
+            ),
+            callback=state_queue.put,
+            task=None,
+            queued=None,
+        )
 
         identifier = secrets.token_bytes(4)
         msg: InternalMessage
@@ -719,14 +739,13 @@ class WSPubSubConnectorReceiver:
             self.state.config.max_websocket_message_size is None
             or length < self.state.config.max_websocket_message_size
         ):
-
             msg = InternalSmallMessage(
                 type=InternalMessageType.SMALL,
                 identifier=identifier,
                 topic=topic,
                 data=read_exact(message, length),
                 sha512=message_sha512,
-                callback=state_queue.put,
+                callback=callback,
             )
         else:
             msg = InternalLargeMessage(
@@ -736,7 +755,7 @@ class WSPubSubConnectorReceiver:
                 stream=message,
                 length=length,
                 sha512=message_sha512,
-                callback=state_queue.put,
+                callback=callback,
             )
 
         if self.state.ws_state.type == StateType.OPEN:
