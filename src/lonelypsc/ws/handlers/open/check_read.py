@@ -8,8 +8,8 @@ from lonelypsc.client import PubSubError
 from lonelypsc.types.websocket_message import WSMessageBytes
 from lonelypsc.ws.check_result import CheckResult
 from lonelypsc.ws.handlers.open.messages.generic import check_read_message
+from lonelypsc.ws.handlers.util.read_from_websocket import make_websocket_read_task
 from lonelypsc.ws.state import ReceivingState, StateOpen
-from lonelypsc.ws.util import make_websocket_read_task
 
 
 def check_read_task(state: StateOpen) -> CheckResult:

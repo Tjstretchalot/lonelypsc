@@ -11,6 +11,7 @@ from lonelypsp.stateful.parser_helpers import parse_b2s_message_prefix
 from lonelypsp.util.bounded_deque import BoundedDeque
 from lonelypsp.util.drainable_asyncio_queue import DrainableAsyncioQueue
 
+from lonelypsc.client import PubSubError, PubSubIrrecoverableError
 from lonelypsc.types.websocket_message import WSMessageBytes
 from lonelypsc.ws.check_result import (
     CheckResult,
@@ -20,6 +21,8 @@ from lonelypsc.ws.check_result import (
 )
 from lonelypsc.ws.compressor import CompressorStoreImpl
 from lonelypsc.ws.handlers.protocol import StateHandler
+from lonelypsc.ws.handlers.util.read_from_websocket import make_websocket_read_task
+from lonelypsc.ws.handlers.util.state_specific_cleanup import handle_via_composition
 from lonelypsc.ws.state import (
     ClosingRetryInformationCannotRetry,
     ClosingRetryInformationType,
@@ -38,7 +41,6 @@ from lonelypsc.ws.state import (
     StateOpen,
     StateType,
 )
-from lonelypsc.ws.util import make_websocket_read_task
 
 
 async def handle_configuring(state: State) -> State:
@@ -48,60 +50,47 @@ async def handle_configuring(state: State) -> State:
     If there are errors, handles them in the same way as in CONNECTING
     """
     assert state.type == StateType.CONFIGURING
+    return await handle_via_composition(
+        state, core=_core, recover=_recover, shutdown=_shutdown
+    )
 
-    try:
-        if await _check_send_task(state) == CheckResult.RESTART:
-            return state
 
-        if (result := await _check_read_task(state)).type == CheckResult.RESTART:
-            return result.state
-
-        if (result := await _check_cancel_requested(state)).type == CheckResult.RESTART:
-            return result.state
-
-        if (result := _check_backgrounded(state)).type == CheckResult.RESTART:
-            return result.state
-
-        wait_cancel_requested = asyncio.create_task(state.cancel_requested.wait())
-        await asyncio.wait(
-            [
-                state.read_task,
-                *([state.send_task] if state.send_task is not None else []),
-                wait_cancel_requested,
-                *state.backgrounded,
-            ],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        wait_cancel_requested.cancel()
+async def _core(state: StateConfiguring) -> State:
+    """
+    Happy path to progress configuring state, raises an error if cleanup code
+    needs to be called, typically PubSubError for recoverable errors and
+    PubSubIrrecoverableError for unrecoverable errors
+    """
+    if await _check_send_task(state) == CheckResult.RESTART:
         return state
-    except BaseException as e:
-        await _cleanup(state)
-        return StateClosing(
-            type=StateType.CLOSING,
-            config=state.config,
-            cancel_requested=state.cancel_requested,
-            broadcaster=state.broadcaster,
-            client_session=state.client_session,
-            websocket=state.websocket,
-            retry=(
-                ClosingRetryInformationWantRetry(
-                    type=ClosingRetryInformationType.WANT_RETRY,
-                    retry=state.retry,
-                    tasks=state.tasks,
-                    exception=e,
-                )
-                if isinstance(e, Exception)
-                else ClosingRetryInformationCannotRetry(
-                    type=ClosingRetryInformationType.CANNOT_RETRY,
-                    tasks=state.tasks,
-                    exception=e,
-                )
-            ),
-            backgrounded=state.backgrounded,
-        )
+
+    if (result := await _check_read_task(state)).type == CheckResult.RESTART:
+        return result.state
+
+    if (result := await _check_cancel_requested(state)).type == CheckResult.RESTART:
+        return result.state
+
+    if (result := _check_backgrounded(state)).type == CheckResult.RESTART:
+        return result.state
+
+    wait_cancel_requested = asyncio.create_task(state.cancel_requested.wait())
+    await asyncio.wait(
+        [
+            state.read_task,
+            *([state.send_task] if state.send_task is not None else []),
+            wait_cancel_requested,
+            *state.backgrounded,
+        ],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    wait_cancel_requested.cancel()
+    return state
 
 
 async def _check_send_task(state: StateConfiguring) -> CheckResult:
+    """Checks if the subscriber is done with the application part of sending the
+    CONFIGURE message
+    """
     if state.send_task is None or not state.send_task.done():
         return CheckResult.CONTINUE
 
@@ -112,6 +101,7 @@ async def _check_send_task(state: StateConfiguring) -> CheckResult:
 
 
 async def _check_read_task(state: StateConfiguring) -> CheckStateChangerResult:
+    """Checks if the broadcaster has confirmed the configure message yet"""
     if not state.read_task.done():
         return CheckStateChangerResultContinue(type=CheckResult.CONTINUE)
 
@@ -129,7 +119,7 @@ async def _check_read_task(state: StateConfiguring) -> CheckStateChangerResult:
     prefix = parse_b2s_message_prefix(stream)
 
     if prefix.type != BroadcasterToSubscriberStatefulMessageType.CONFIRM_CONFIGURE:
-        raise Exception(
+        raise PubSubError(
             f"received unexpected message before confirm configure: {prefix}"
         )
 
@@ -197,30 +187,16 @@ async def _check_read_task(state: StateConfiguring) -> CheckStateChangerResult:
 
 
 async def _check_cancel_requested(state: StateConfiguring) -> CheckStateChangerResult:
+    """Checks if it has been requested that the state move towards CLOSED"""
     if not state.cancel_requested.is_set():
         return CheckStateChangerResultContinue(type=CheckResult.CONTINUE)
-
-    await _cleanup(state)
-    return CheckStateChangerResultDone(
-        type=CheckResult.RESTART,
-        state=StateClosing(
-            type=StateType.CLOSING,
-            config=state.config,
-            cancel_requested=state.cancel_requested,
-            broadcaster=state.broadcaster,
-            client_session=state.client_session,
-            websocket=state.websocket,
-            retry=ClosingRetryInformationCannotRetry(
-                type=ClosingRetryInformationType.CANNOT_RETRY,
-                tasks=state.tasks,
-                exception=Exception("cancel requested"),
-            ),
-            backgrounded=state.backgrounded,
-        ),
-    )
+    raise PubSubIrrecoverableError("cancel requested")
 
 
 def _check_backgrounded(state: StateConfiguring) -> CheckStateChangerResult:
+    """Cleans out done background tasks, raising an irrecoverable error if any
+    failed
+    """
     if not any(task.done() for task in state.backgrounded):
         return CheckStateChangerResultContinue(type=CheckResult.CONTINUE)
 
@@ -231,32 +207,58 @@ def _check_backgrounded(state: StateConfiguring) -> CheckStateChangerResult:
             continue
 
         if task.exception() is not None:
-            return CheckStateChangerResultDone(
-                type=CheckResult.RESTART,
-                state=StateClosing(
-                    type=StateType.CLOSING,
-                    config=state.config,
-                    cancel_requested=state.cancel_requested,
-                    broadcaster=state.broadcaster,
-                    client_session=state.client_session,
-                    websocket=state.websocket,
-                    retry=ClosingRetryInformationCannotRetry(
-                        type=ClosingRetryInformationType.CANNOT_RETRY,
-                        tasks=state.tasks,
-                        exception=Exception("background task failed"),
-                    ),
-                    backgrounded=state.backgrounded,
-                ),
-            )
+            raise PubSubIrrecoverableError("background task failed")
 
     state.backgrounded = new_backgrounded
     return CheckStateChangerResultDone(type=CheckResult.RESTART, state=state)
 
 
 async def _cleanup(state: StateConfiguring) -> None:
+    """Cancels any pending tasks; can be called multiple times"""
     if state.send_task is not None:
         state.send_task.cancel()
     state.read_task.cancel()
+
+
+async def _recover(state: StateConfiguring, /, *, cause: BaseException) -> State:
+    """Attempts to move to the next broadcaster"""
+    await _cleanup(state)
+    return StateClosing(
+        type=StateType.CLOSING,
+        config=state.config,
+        cancel_requested=state.cancel_requested,
+        broadcaster=state.broadcaster,
+        client_session=state.client_session,
+        websocket=state.websocket,
+        retry=(
+            ClosingRetryInformationWantRetry(
+                type=ClosingRetryInformationType.WANT_RETRY,
+                retry=state.retry,
+                tasks=state.tasks,
+                exception=cause,
+            )
+        ),
+        backgrounded=state.backgrounded,
+    )
+
+
+async def _shutdown(state: StateConfiguring, /, *, cause: BaseException) -> State:
+    """Moves towards the CLOSED state"""
+    await _cleanup(state)
+    return StateClosing(
+        type=StateType.CLOSING,
+        config=state.config,
+        cancel_requested=state.cancel_requested,
+        broadcaster=state.broadcaster,
+        client_session=state.client_session,
+        websocket=state.websocket,
+        retry=ClosingRetryInformationCannotRetry(
+            type=ClosingRetryInformationType.CANNOT_RETRY,
+            tasks=state.tasks,
+            exception=cause,
+        ),
+        backgrounded=state.backgrounded,
+    )
 
 
 if TYPE_CHECKING:

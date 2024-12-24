@@ -1,7 +1,4 @@
-import asyncio
 from typing import TYPE_CHECKING
-
-from lonelypsp.util.bounded_deque import BoundedDequeFullError
 
 from lonelypsc.client import PubSubIrrecoverableError
 from lonelypsc.ws.check_result import CheckResult
@@ -25,56 +22,51 @@ from lonelypsc.ws.handlers.open.check_unsent_acks import check_unsent_acks
 from lonelypsc.ws.handlers.open.check_unsent_notifications import (
     check_unsent_notifications,
 )
-from lonelypsc.ws.handlers.open.cleanup import cleanup_open
+from lonelypsc.ws.handlers.open.cleanup import recover_open, shutdown_open
 from lonelypsc.ws.handlers.protocol import StateHandler
-from lonelypsc.ws.state import State, StateType
+from lonelypsc.ws.handlers.util.state_specific_cleanup import handle_via_composition
+from lonelypsc.ws.state import State, StateOpen, StateType
 
 
 async def handle_open(state: State) -> State:
+    assert state.type == StateType.OPEN
+    return await handle_via_composition(
+        state,
+        core=_core,
+        recover=recover_open,
+        shutdown=shutdown_open,
+    )
+
+
+async def _core(state: StateOpen) -> State:
     """The core inner loop for the websocket client; processes incoming
     messages and sends outgoing messages in a deterministic order
     """
-    assert state.type == StateType.OPEN
-    try:
-        if state.cancel_requested.is_set():
-            raise PubSubIrrecoverableError("cancel requested")
+    if state.cancel_requested.is_set():
+        raise PubSubIrrecoverableError("cancel requested")
 
-        if check_receiving_authorizing(state) == CheckResult.RESTART:
-            return state
-        if check_receiving_waiting_compressor(state) == CheckResult.RESTART:
-            return state
-        if check_receiving_decompressing(state) == CheckResult.RESTART:
-            return state
-        if check_read_task(state) == CheckResult.RESTART:
-            return state
-        if check_send_task(state) == CheckResult.RESTART:
-            return state
-        if check_unsent_acks(state) == CheckResult.RESTART:
-            return state
-        if check_management_tasks(state) == CheckResult.RESTART:
-            return state
-        if check_resending_notifications(state) == CheckResult.RESTART:
-            return state
-        if check_unsent_notifications(state) == CheckResult.RESTART:
-            return state
-        if check_sent_notifications(state) == CheckResult.RESTART:
-            return state
+    if check_receiving_authorizing(state) == CheckResult.RESTART:
+        return state
+    if check_receiving_waiting_compressor(state) == CheckResult.RESTART:
+        return state
+    if check_receiving_decompressing(state) == CheckResult.RESTART:
+        return state
+    if check_read_task(state) == CheckResult.RESTART:
+        return state
+    if check_send_task(state) == CheckResult.RESTART:
+        return state
+    if check_unsent_acks(state) == CheckResult.RESTART:
+        return state
+    if check_management_tasks(state) == CheckResult.RESTART:
+        return state
+    if check_resending_notifications(state) == CheckResult.RESTART:
+        return state
+    if check_unsent_notifications(state) == CheckResult.RESTART:
+        return state
+    if check_sent_notifications(state) == CheckResult.RESTART:
+        return state
 
-        raise NotImplementedError
-    except (
-        NotImplementedError,
-        AssertionError,
-        PubSubIrrecoverableError,
-        asyncio.CancelledError,
-        KeyboardInterrupt,
-        # full queues typically cause dropped state, e.g., what we are meant
-        # to be subscribed to, which can't be recovered from
-        BoundedDequeFullError,
-        asyncio.QueueFull,
-    ) as e:
-        return await cleanup_open(state, e, irrecoverable=True)
-    except BaseException as e:
-        return await cleanup_open(state, e, irrecoverable=False)
+    raise NotImplementedError
 
 
 if TYPE_CHECKING:
