@@ -2,6 +2,7 @@ from typing import TYPE_CHECKING
 
 from lonelypsc.client import PubSubIrrecoverableError
 from lonelypsc.ws.check_result import CheckResult
+from lonelypsc.ws.handlers.open.check_backgrounded import check_backgrounded
 from lonelypsc.ws.handlers.open.check_management_tasks import check_management_tasks
 from lonelypsc.ws.handlers.open.check_read import check_read_task
 from lonelypsc.ws.handlers.open.check_receiving_authorizing import (
@@ -16,6 +17,7 @@ from lonelypsc.ws.handlers.open.check_receiving_waiting_compressor import (
 from lonelypsc.ws.handlers.open.check_resending_notifications import (
     check_resending_notifications,
 )
+from lonelypsc.ws.handlers.open.check_retry_tentative import check_retry_tentative
 from lonelypsc.ws.handlers.open.check_send import check_send_task
 from lonelypsc.ws.handlers.open.check_sent_notifications import check_sent_notifications
 from lonelypsc.ws.handlers.open.check_unsent_acks import check_unsent_acks
@@ -23,6 +25,7 @@ from lonelypsc.ws.handlers.open.check_unsent_notifications import (
     check_unsent_notifications,
 )
 from lonelypsc.ws.handlers.open.cleanup import recover_open, shutdown_open
+from lonelypsc.ws.handlers.open.wait_something_changed import wait_something_changed
 from lonelypsc.ws.handlers.protocol import StateHandler
 from lonelypsc.ws.handlers.util.state_specific_cleanup import handle_via_composition
 from lonelypsc.ws.state import State, StateOpen, StateType
@@ -65,8 +68,14 @@ async def _core(state: StateOpen) -> State:
         return state
     if check_sent_notifications(state) == CheckResult.RESTART:
         return state
-
-    raise NotImplementedError
+    if state.compressors.check_compressor_tasks() == CheckResult.RESTART:
+        return state
+    if check_backgrounded(state) == CheckResult.RESTART:
+        return state
+    if check_retry_tentative(state) == CheckResult.RESTART:
+        return state
+    await wait_something_changed(state)
+    return state
 
 
 if TYPE_CHECKING:

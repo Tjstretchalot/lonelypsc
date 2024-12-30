@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from lonelypsp.stateful.constants import SubscriberToBroadcasterStatefulMessageType
 from lonelypsp.stateful.messages.configure import S2B_Configure, serialize_s2b_configure
 
-from lonelypsc.client import PubSubError, PubSubIrrecoverableError
+from lonelypsc.client import PubSubIrrecoverableError
 from lonelypsc.util.errors import combine_multiple_exceptions
 from lonelypsc.ws.check_result import (
     CheckResult,
@@ -129,7 +129,7 @@ async def _sweep_backgrounded(state: StateConnecting) -> None:
 
         # avoids duplicating the error as it will be found during cleanup
         # again
-        raise PubSubError("saw backgrounded task failed")
+        raise PubSubIrrecoverableError("saw backgrounded task failed")
 
     state.backgrounded = new_backgrounded
 

@@ -22,6 +22,7 @@ from typing import (
     overload,
 )
 
+from lonelypsp.util.cancel_and_check import cancel_and_check
 from lonelypsp.util.drainable_asyncio_queue import DrainableAsyncioQueue
 
 from lonelypsc.types.sync_io import (
@@ -99,19 +100,18 @@ class PubSubClientSubscriptionIterator:
                 break
             await item_to_cleanup.cleanup()
 
+        seen_lost = self.state.status == PubSubClientConnectionStatus.LOST
         while True:
-            seen_lost = self.state.status == PubSubClientConnectionStatus.LOST
-            while True:
-                try:
-                    new_status = self.state.status_queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    if self.state.status != PubSubClientConnectionStatus.LOST:
-                        break
-                    else:
-                        new_status = await self.state.status_queue.get()
-
-                seen_lost = seen_lost or new_status == PubSubClientConnectionStatus.LOST
+            if not self.state.status_queue.empty():
+                new_status = self.state.status_queue.get_nowait()
                 self.state.status = new_status
+                if self.state.status == PubSubClientConnectionStatus.LOST:
+                    seen_lost = True
+                continue
+
+            if self.state.status == PubSubClientConnectionStatus.LOST:
+                await self.state.status_queue.wait_not_empty()
+                continue
 
             if self.state.status == PubSubClientConnectionStatus.ABANDONED:
                 raise PubSubRequestConnectionAbandonedError("connection abandoned")
@@ -119,30 +119,31 @@ class PubSubClientSubscriptionIterator:
             assert self.state.status == PubSubClientConnectionStatus.OK, "impossible"
             if seen_lost and self.state.on_receiving is not None:
                 await self.state.on_receiving()
+                seen_lost = False
+                continue
 
-            buffer_task = asyncio.create_task(self.state.buffer.get())
-            status_task = asyncio.create_task(self.state.status_queue.get())
-            try:
-                await asyncio.wait(
-                    [buffer_task, status_task], return_when=asyncio.FIRST_COMPLETED
+            if self.state.buffer.empty():
+                buffer_task = asyncio.create_task(self.state.buffer.wait_not_empty())
+                status_task = asyncio.create_task(
+                    self.state.status_queue.wait_not_empty()
                 )
-            except asyncio.CancelledError:
-                buffer_task.cancel()
-                status_task.cancel()
-                raise
+                try:
+                    await asyncio.wait(
+                        [buffer_task, status_task], return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    await asyncio.gather(
+                        cancel_and_check(buffer_task), cancel_and_check(status_task)
+                    )
+                continue
 
-            if not status_task.cancel():
-                canceled_buffer_task = buffer_task.cancel()
-                self.state.status = status_task.result()
-                if canceled_buffer_task:
-                    continue
-
-            result = buffer_task.result()
+            result = self.state.buffer.get_nowait()
             try:
                 self.state.cleanup.put_nowait(result)
             except asyncio.QueueFull:
                 await result.cleanup()
                 raise
+
             return result
 
 
@@ -167,20 +168,24 @@ class PubSubClientSubscriptionWithTimeoutIterator:
         """Explicitly expects cancellation"""
         timeout_task = asyncio.create_task(asyncio.sleep(self.timeout))
         message_task = asyncio.create_task(self.raw_iter.__anext__())
+        exc: Optional[BaseException] = None
         try:
             await asyncio.wait(
                 (timeout_task, message_task), return_when=asyncio.FIRST_COMPLETED
             )
-        except asyncio.CancelledError:
-            timeout_task.cancel()
-            message_task.cancel()
-            raise
+        except BaseException as e:
+            exc = e
 
-        if not message_task.cancel():
-            timeout_task.cancel()
-            return await message_task
+        _, message_result = await asyncio.gather(
+            cancel_and_check(timeout_task, False), cancel_and_check(message_task)
+        )
 
-        message_task.cancel()
+        if message_result is not None:
+            return message_result
+
+        if exc is not None:
+            raise exc
+
         return None
 
 
@@ -554,21 +559,23 @@ class PubSubClientSubscription:
                 raise exc
 
     async def on_connection_lost(self) -> None:
-        async with self._state_lock:
-            if self.state.type == _STATE_ENTERED_BUFFERING:
-                self.state.status_queue.put_nowait(PubSubClientConnectionStatus.LOST)
+        # acquiring a state lock leads to a deadlock:
+        # - in e.g. aenter, we hold the state lock
+        #   - we call direct_subscribe_exact
+        #   - this calls either on_connection_lost or on_connection_established
+        #
+        # luckily, we don't need the state lock so long as we don't yield and are ok
+        # with status_queue potentially gaining values while the state lock is held
+        if self.state.type == _STATE_ENTERED_BUFFERING:
+            self.state.status_queue.put_nowait(PubSubClientConnectionStatus.LOST)
 
     async def on_connection_established(self) -> None:
-        async with self._state_lock:
-            if self.state.type == _STATE_ENTERED_BUFFERING:
-                self.state.status_queue.put_nowait(PubSubClientConnectionStatus.OK)
+        if self.state.type == _STATE_ENTERED_BUFFERING:
+            self.state.status_queue.put_nowait(PubSubClientConnectionStatus.OK)
 
     async def on_connection_abandoned(self) -> None:
-        async with self._state_lock:
-            if self.state.type == _STATE_ENTERED_BUFFERING:
-                self.state.status_queue.put_nowait(
-                    PubSubClientConnectionStatus.ABANDONED
-                )
+        if self.state.type == _STATE_ENTERED_BUFFERING:
+            self.state.status_queue.put_nowait(PubSubClientConnectionStatus.ABANDONED)
 
     async def subscribe_exact(self, topic: bytes) -> None:
         async with self._state_lock:
@@ -1034,7 +1041,7 @@ class PubSubClientReceiver(Protocol):
 
         For example, if the caller does the same idempotent operation regardless
         of the contents/topic of the message, then they can simply do that operation
-        on `on_connec
+        on `on_connection_established`
         """
 
     async def unregister_status_handler(self, /, *, registration_id: int) -> None:

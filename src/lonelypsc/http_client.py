@@ -27,6 +27,8 @@ from aiohttp.typedefs import LooseHeaders
 from fastapi import APIRouter, Header
 from fastapi.requests import Request
 from fastapi.responses import Response
+from lonelypsp.util.cancel_and_check import cancel_and_check
+from starlette.background import BackgroundTask
 
 from lonelypsc.client import (
     PubSubClient,
@@ -45,6 +47,7 @@ from lonelypsc.config.config import BroadcastersShuffler, PubSubBroadcasterConfi
 from lonelypsc.config.helpers.uvicorn_bind_config import handle_bind_with_uvicorn
 from lonelypsc.config.http_config import HttpPubSubConfig
 from lonelypsc.types.sync_io import SyncStandardIO
+from lonelypsc.util.errors import combine_multiple_exceptions
 from lonelypsc.util.io_helpers import (
     PositionedSyncStandardIO,
     PrefixedSyncStandardIO,
@@ -496,13 +499,22 @@ class HttpPubSubClientReceiver:
         self.config = config
         self.handlers: List[Tuple[int, PubSubDirectOnMessageWithCleanupReceiver]] = []
         """The registered on_message receivers"""
+        self.status_handlers: List[Tuple[int, PubSubDirectConnectionStatusReceiver]] = (
+            []
+        )
+        """The registered connection status handlers"""
         self.bind_task: Optional[asyncio.Task] = None
-        self.connection_status = PubSubClientConnectionStatus.OK
+        self.connection_status = PubSubClientConnectionStatus.LOST
         self._status_counter = 0
         """Ensures we can give unique status handler ids"""
+        self._status_handlers_lock = asyncio.Lock()
+        """lock for interacting with status_handlers"""
 
     async def setup_receiver(self) -> None:
         assert self.bind_task is None, "already setup & not re-entrant"
+        assert (
+            self.connection_status == PubSubClientConnectionStatus.LOST
+        ), "previously setup and not reusable"
         bind_config = self.config.bind
 
         if bind_config["type"] == "uvicorn":
@@ -512,12 +524,58 @@ class HttpPubSubClientReceiver:
         router.add_api_route("/v1/receive", self._receive, methods=["POST"])
         self.bind_task = asyncio.create_task(bind_config["callback"](router))
 
+        async with self._status_handlers_lock:
+            for _, status_handler in self.status_handlers:
+                try:
+                    await status_handler.on_connection_established()
+                except BaseException as e:
+                    excs: List[BaseException] = [e]
+                    self.connection_status = PubSubClientConnectionStatus.ABANDONED
+
+                    canceler = asyncio.create_task(cancel_and_check(self.bind_task))
+                    self.bind_task = None
+
+                    for _, handler in self.status_handlers:
+                        try:
+                            await handler.on_connection_abandoned()
+                        except BaseException as e2:
+                            excs.append(e2)
+
+                    self.status_handlers = []
+                    try:
+                        await canceler
+                    except BaseException as e:
+                        excs.append(e)
+
+                    raise combine_multiple_exceptions(
+                        "failed to tell status handlers connection established", excs
+                    )
+
+            self.connection_status = PubSubClientConnectionStatus.OK
+
     async def teardown_receiver(self) -> None:
         assert self.bind_task is not None, "not set up"
-        bind_task = self.bind_task
+        canceler = asyncio.create_task(cancel_and_check(self.bind_task))
         self.bind_task = None
-        bind_task.cancel()
-        await asyncio.wait([bind_task])
+
+        excs: List[BaseException] = []
+        async with self._status_handlers_lock:
+            self.connection_status = PubSubClientConnectionStatus.ABANDONED
+            for _, handler in self.status_handlers:
+                try:
+                    await handler.on_connection_abandoned()
+                except BaseException as e:
+                    excs.append(e)
+
+            self.status_handlers = []
+
+        try:
+            await canceler
+        except BaseException as e:
+            excs.append(e)
+
+        if excs:
+            raise combine_multiple_exceptions("failed to teardown receiver", excs)
 
     async def _receive(
         self,
@@ -537,6 +595,16 @@ class HttpPubSubClientReceiver:
 
         The `X-Topic` header MUST be set to the topic name, base64 encoded.
         """
+        if self.connection_status == PubSubClientConnectionStatus.ABANDONED:
+            return Response(
+                status_code=503,
+                background=BackgroundTask(
+                    _raise_excs,
+                    "connection status abandoned but received message",
+                    [Exception("receive after abandoned")],
+                ),
+            )
+
         if repr_digest is None:
             return Response(
                 status_code=400,
@@ -595,7 +663,29 @@ class HttpPubSubClientReceiver:
             authorization=authorization,
         )
         if auth_result == "unavailable":
-            return Response(status_code=503)
+            async with self._status_handlers_lock:
+                if self.connection_status == PubSubClientConnectionStatus.OK:
+                    self.connection_status = PubSubClientConnectionStatus.LOST
+                    excs: List[BaseException] = []
+                    for _, status_handler in self.status_handlers:
+                        try:
+                            await status_handler.on_connection_lost()
+                        except BaseException as e:
+                            excs.append(e)
+
+            return Response(
+                status_code=503,
+                background=(
+                    BackgroundTask(
+                        _raise_excs,
+                        "db auth unavailable then failed to inform status handlers",
+                        excs,
+                    )
+                    if excs
+                    else None
+                ),
+            )
+
         if auth_result != "ok":
             return Response(
                 status_code=403,
@@ -604,6 +694,16 @@ class HttpPubSubClientReceiver:
                 + json.dumps(auth_result).encode("utf-8")
                 + b"}",
             )
+
+        background_exceptions: List[BaseException] = []
+        async with self._status_handlers_lock:
+            if self.connection_status == PubSubClientConnectionStatus.LOST:
+                self.connection_status = PubSubClientConnectionStatus.OK
+                for _, status_handler in self.status_handlers:
+                    try:
+                        await status_handler.on_connection_established()
+                    except BaseException as e:
+                        background_exceptions.append(e)
 
         with tempfile.SpooledTemporaryFile(
             max_size=self.config.message_body_spool_size, mode="w+b"
@@ -622,10 +722,18 @@ class HttpPubSubClientReceiver:
 
             real_digest = hasher.digest()
             if real_digest != expected_digest:
+                background_exceptions.append(Exception("incorrect sha-512 repr-digest"))
                 return Response(
                     status_code=403,
                     headers={"Content-Type": "application/json; charset=utf-8"},
                     content=b'{"unsubscribe": true, "reason": "incorrect sha-512 repr-digest"}',
+                    background=(
+                        BackgroundTask(
+                            _raise_excs,
+                            "incorrect sha-512 repr-digest",
+                            background_exceptions,
+                        )
+                    ),
                 )
 
             for idx, (reg_id, handler) in enumerate(tuple(self.handlers)):
@@ -651,9 +759,28 @@ class HttpPubSubClientReceiver:
                     data=spooled_request_body,
                     cleanup=handler_cleanup,
                 )
-                await handler.on_message(message)
-                await handler_done.wait()
-        return Response(status_code=200)
+                try:
+                    await handler.on_message(message)
+                    await handler_done.wait()
+                except asyncio.CancelledError as canceled:
+                    background_exceptions.append(canceled)
+                    raise combine_multiple_exceptions(
+                        "handler canceled", background_exceptions
+                    )
+                except BaseException as e:
+                    background_exceptions.append(e)
+        return Response(
+            status_code=200,
+            background=(
+                BackgroundTask(
+                    _raise_excs,
+                    "failed to inform handlers about received message",
+                    background_exceptions,
+                )
+                if background_exceptions
+                else None
+            ),
+        )
 
     async def register_on_message(
         self, /, *, receiver: PubSubDirectOnMessageWithCleanupReceiver
@@ -675,16 +802,37 @@ class HttpPubSubClientReceiver:
     async def register_status_handler(
         self, /, *, receiver: PubSubDirectConnectionStatusReceiver
     ) -> int:
-        # we do not attempt to verify connection status over http currently
-        # TODO: should at least wait for `setup_receiver` before calling `on_connection_established`
         self._status_counter += 1
-        await receiver.on_connection_established()
-        return self._status_counter
+        status_handler_id = self._status_counter
+        async with self._status_handlers_lock:
+            self.status_handlers.append((status_handler_id, receiver))
+            if self.connection_status == PubSubClientConnectionStatus.OK:
+                try:
+                    await receiver.on_connection_established()
+                except BaseException:
+                    for idx, (reg_id, _) in enumerate(self.status_handlers):
+                        if reg_id == status_handler_id:
+                            self.status_handlers.pop(idx)
+                    raise
+            return status_handler_id
 
     async def unregister_status_handler(self, /, *, registration_id: int) -> None:
-        # we do not attempt to verify connection status over http
-        assert registration_id <= self._status_counter, "invalid registration id"
-        ...
+        async with self._status_handlers_lock:
+            assert registration_id <= self._status_counter, "invalid registration id"
+
+            # seems more likely a more recent handler is being removed, hence search
+            # from tail
+            idx = len(self.status_handlers) - 1
+            while idx >= 0:
+                if self.status_handlers[idx][0] == registration_id:
+                    self.status_handlers.pop(idx)
+                    return
+                idx -= 1
+            raise ValueError("invalid registration id")
+
+
+async def _raise_excs(msg: str, excs: List[BaseException]) -> None:
+    raise combine_multiple_exceptions(msg, excs)
 
 
 if TYPE_CHECKING:
