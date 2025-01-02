@@ -61,10 +61,10 @@ async def handle_via_composition(
         BoundedDequeFullError,
         asyncio.QueueFull,
     ) as e:
-        recoverable = True
+        recoverable = False
         exception = e
     except BaseException as be:
-        recoverable = False
+        recoverable = True
         exception = be
 
     if recoverable:

@@ -190,16 +190,9 @@ async def cleanup_tasks_and_raise(
 
     if cleanup_excs:
         raise combine_multiple_exceptions(
-            "failed to cleanup tasks",
+            message,
             cleanup_excs,
             context=cause,
         )
 
-    to_raise: BaseException
-    if isinstance(cause, Exception):
-        to_raise = Exception(message)
-    else:
-        to_raise = BaseException(message)
-
-    to_raise.__cause__ = cause
-    raise to_raise
+    raise cause

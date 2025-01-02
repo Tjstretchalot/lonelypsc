@@ -792,7 +792,7 @@ class SendingInternalMessage:
 Sending = Union[SendingSimple, SendingManagementTask, SendingInternalMessage]
 
 
-@fast_dataclass
+@dataclass
 class StateConnecting:
     """the variables when in the CONNECTING state"""
 
@@ -1026,7 +1026,7 @@ class StateOpen:
     """
 
 
-@fast_dataclass
+@dataclass
 class StateWaitingRetry:
     """the variables in the WAITING_RETRY state"""
 

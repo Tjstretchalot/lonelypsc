@@ -11,7 +11,11 @@ from lonelypsp.stateful.parser_helpers import parse_b2s_message_prefix
 from lonelypsp.util.bounded_deque import BoundedDeque
 from lonelypsp.util.drainable_asyncio_queue import DrainableAsyncioQueue
 
-from lonelypsc.client import PubSubError, PubSubIrrecoverableError
+from lonelypsc.client import (
+    PubSubCancelRequested,
+    PubSubError,
+    PubSubIrrecoverableError,
+)
 from lonelypsc.types.websocket_message import WSMessageBytes
 from lonelypsc.ws.check_result import (
     CheckResult,
@@ -190,7 +194,7 @@ async def _check_cancel_requested(state: StateConfiguring) -> CheckStateChangerR
     """Checks if it has been requested that the state move towards CLOSED"""
     if not state.cancel_requested.is_set():
         return CheckStateChangerResultContinue(type=CheckResult.CONTINUE)
-    raise PubSubIrrecoverableError("cancel requested")
+    raise PubSubCancelRequested()
 
 
 def _check_backgrounded(state: StateConfiguring) -> CheckStateChangerResult:

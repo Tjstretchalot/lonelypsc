@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 
-from lonelypsc.client import PubSubIrrecoverableError
+from lonelypsc.client import PubSubCancelRequested, PubSubIrrecoverableError
 from lonelypsc.ws.check_result import (
     CheckResult,
     CheckStateChangerResult,
@@ -77,7 +77,7 @@ async def _check_canceled(state: StateWaitingRetry) -> CheckStateChangerResult:
     if not state.cancel_requested.is_set():
         return CheckStateChangerResultContinue(type=CheckResult.CONTINUE)
 
-    raise PubSubIrrecoverableError("cancel requested")
+    raise PubSubCancelRequested()
 
 
 def _sweep_backgrounded(state: StateWaitingRetry) -> None:

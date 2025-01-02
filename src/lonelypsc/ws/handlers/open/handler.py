@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 
-from lonelypsc.client import PubSubIrrecoverableError
+from lonelypsc.client import PubSubCancelRequested, PubSubIrrecoverableError
 from lonelypsc.ws.check_result import CheckResult
 from lonelypsc.ws.handlers.open.check_backgrounded import check_backgrounded
 from lonelypsc.ws.handlers.open.check_management_tasks import check_management_tasks
@@ -46,7 +46,7 @@ async def _core(state: StateOpen) -> State:
     messages and sends outgoing messages in a deterministic order
     """
     if state.cancel_requested.is_set():
-        raise PubSubIrrecoverableError("cancel requested")
+        raise PubSubCancelRequested()
 
     if check_receiving_authorizing(state) == CheckResult.RESTART:
         return state

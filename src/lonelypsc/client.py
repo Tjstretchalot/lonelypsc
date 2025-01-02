@@ -838,6 +838,10 @@ class PubSubIrrecoverableError(BaseException):
     """
 
 
+class PubSubCancelRequested(PubSubIrrecoverableError):
+    """Raised when a cancel is requested"""
+
+
 class PubSubRequestError(PubSubError):
     """An error occurred while making a request to the pub/sub server"""
 

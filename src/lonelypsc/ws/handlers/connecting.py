@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from lonelypsp.stateful.constants import SubscriberToBroadcasterStatefulMessageType
 from lonelypsp.stateful.messages.configure import S2B_Configure, serialize_s2b_configure
 
-from lonelypsc.client import PubSubIrrecoverableError
+from lonelypsc.client import PubSubCancelRequested, PubSubIrrecoverableError
 from lonelypsc.util.errors import combine_multiple_exceptions
 from lonelypsc.ws.check_result import (
     CheckResult,
@@ -113,10 +113,13 @@ async def _check_canceled(state: StateConnecting) -> CheckStateChangerResult:
     if not state.cancel_requested.is_set():
         return CheckStateChangerResultContinue(type=CheckResult.CONTINUE)
 
-    raise PubSubIrrecoverableError("cancel requested")
+    raise PubSubCancelRequested()
 
 
 async def _sweep_backgrounded(state: StateConnecting) -> None:
+    if not any(j.done() for j in state.backgrounded):
+        return
+
     new_backgrounded = set()
 
     for bknd in state.backgrounded:

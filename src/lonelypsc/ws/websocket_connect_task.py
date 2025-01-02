@@ -21,7 +21,7 @@ def make_websocket_connect_task(
     """
     return asyncio.create_task(
         client_session.ws_connect(
-            broadcaster["host"],
+            broadcaster["host"] + "/v1/websocket",
             timeout=aiohttp.ClientWSTimeout(
                 ws_receive=config.websocket_receive_timeout
             ),
