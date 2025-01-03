@@ -88,13 +88,6 @@ class WebsocketGenericConfig(Protocol):
         """
 
     @property
-    def websocket_receive_timeout(self) -> Optional[float]:
-        """The maximum amount of time to spend waiting for data on the websocket
-        before assuming the connection was lost. Note that this should be larger
-        than the heartbeat interval
-        """
-
-    @property
     def websocket_close_timeout(self) -> Optional[float]:
         """The maximum amount of time to wait after trying to close the websocket
         connection for the acknowledgement from the broadcaster
@@ -102,9 +95,32 @@ class WebsocketGenericConfig(Protocol):
 
     @property
     def websocket_heartbeat_interval(self) -> float:
-        """The interval in seconds between sending websocket ping frames to the
-        broadcaster. A lower value causes more overhead but more quickly detects
-        connection issues.
+        """If the websocket is idle for this duration in seconds, the subscriber
+        sends a PING frame and waits up to half this duration to receive
+        a PONG frame or the subscriber assumes the connection is lost and
+        moves to the next broadcaster. A lower value causes more overhead but
+        more quickly detects connection issues.
+
+        On the broadcaster side this is configured by the ASGI server, e.g.,
+        uvicorn has `--ws-ping-interval <float> --ws-ping-timeout <float>`.
+        The lower of the two ping intervals is the effective ping overhead
+        of a healthy connection, but both ends must still have a heartbeat
+        interval (not necessarily the same) to detect a failure, since they
+        may not receive the FIN from the other end if the connection is lost
+
+        It is not recommended to have the same ping interval on both sides as
+        it leads to needlessly doubled PING/PONG (both sides will send a ping
+        before receiving the corresponding pong), so a good choice is e.g.
+        subscriber has X, broadcasters >=2X, since subscribers are more sensitive
+        to lost connections depending on the usecase and may want to tune it lower
+        if it's very important they detect missed messages quickly, but can reduce
+        overhead if it's not as important, whereas if the broadcaster side is low
+        all connections have high overhead
+
+        NOTE: default uvicorn settings is ping interval 20, ping timeout 20, so
+        a good default choice is a heartbeat interval 10 for subscribers, with
+        a value no higher than 19 to avoid doubling and no lower than the 2x the
+        99.9% roundtrip time to reduce superfluous reconnects
         """
 
     @property
@@ -232,7 +248,6 @@ class WebsocketGenericConfigFromParts:
         self,
         max_websocket_message_size: Optional[int],
         websocket_open_timeout: Optional[float],
-        websocket_receive_timeout: Optional[float],
         websocket_close_timeout: Optional[float],
         websocket_heartbeat_interval: float,
         websocket_minimal_headers: bool,
@@ -244,7 +259,6 @@ class WebsocketGenericConfigFromParts:
     ):
         self.max_websocket_message_size = max_websocket_message_size
         self.websocket_open_timeout = websocket_open_timeout
-        self.websocket_receive_timeout = websocket_receive_timeout
         self.websocket_close_timeout = websocket_close_timeout
         self.websocket_heartbeat_interval = websocket_heartbeat_interval
         self.websocket_minimal_headers = websocket_minimal_headers
@@ -439,10 +453,6 @@ class WebsocketPubSubConfigFromParts:
         return self.generic.websocket_open_timeout
 
     @property
-    def websocket_receive_timeout(self) -> Optional[float]:
-        return self.generic.websocket_open_timeout
-
-    @property
     def websocket_close_timeout(self) -> Optional[float]:
         return self.generic.websocket_close_timeout
 
@@ -565,7 +575,6 @@ def make_websocket_pub_sub_config(
     outgoing_min_reconnect_interval: float,
     max_websocket_message_size: Optional[int],
     websocket_open_timeout: Optional[float],
-    websocket_receive_timeout: Optional[float],
     websocket_close_timeout: Optional[float],
     websocket_heartbeat_interval: float,
     websocket_minimal_headers: bool,
@@ -597,7 +606,6 @@ def make_websocket_pub_sub_config(
         generic=WebsocketGenericConfigFromParts(
             max_websocket_message_size=max_websocket_message_size,
             websocket_open_timeout=websocket_open_timeout,
-            websocket_receive_timeout=websocket_receive_timeout,
             websocket_close_timeout=websocket_close_timeout,
             websocket_heartbeat_interval=websocket_heartbeat_interval,
             websocket_minimal_headers=websocket_minimal_headers,

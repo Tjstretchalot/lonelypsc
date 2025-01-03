@@ -22,8 +22,12 @@ def make_websocket_connect_task(
     return asyncio.create_task(
         client_session.ws_connect(
             broadcaster["host"] + "/v1/websocket",
+            # WARN: do not use ClientWSTimeout ws_receive, which will ignore
+            # heartbeats, meaning it will timeout unless there are actual
+            # notify/subscribe messages being sent. the heartbeat interval
+            # is acting as our receive timeout
             timeout=aiohttp.ClientWSTimeout(
-                ws_receive=config.websocket_receive_timeout
+                ws_receive=None, ws_close=config.websocket_close_timeout
             ),
             heartbeat=config.websocket_heartbeat_interval,
         )

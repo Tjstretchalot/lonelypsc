@@ -19,7 +19,7 @@ async def adapt_websocket_read(websocket: ClientWebSocketResponse) -> WSMessage:
     if result.type == WSMsgType.BINARY:
         return {"type": "websocket.receive", "bytes": result.data}
 
-    if result.type == WSMsgType.CLOSED:
+    if result.type == WSMsgType.CLOSE or result.type == WSMsgType.CLOSED:
         return {
             "type": "websocket.disconnect",
             "code": 1000,

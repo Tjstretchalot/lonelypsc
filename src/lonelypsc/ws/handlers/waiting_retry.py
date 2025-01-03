@@ -67,7 +67,8 @@ async def _wait_something_changed(state: StateWaitingRetry) -> None:
                 for msg in state.tasks.resending_notifications
                 if msg.callback.task is not None
             ],
-        ]
+        ],
+        return_when=asyncio.FIRST_COMPLETED,
     )
     wait_cancel.cancel()
     wait_timeout.cancel()
