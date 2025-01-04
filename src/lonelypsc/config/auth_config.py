@@ -1,5 +1,7 @@
 from typing import TYPE_CHECKING, Literal, Optional, Protocol, Type
 
+from lonelypsp.stateless.make_strong_etag import StrongEtag
+
 
 class IncomingAuthConfig(Protocol):
     async def setup_incoming_auth(self) -> None:
@@ -104,6 +106,41 @@ class OutgoingAuthConfig(Protocol):
             str, None: the authorization header to use, if any
         """
 
+    async def setup_check_subscriptions_authorization(
+        self, /, *, url: str, now: float
+    ) -> Optional[str]:
+        """Provides the authorization header that the subscriber should use to
+        check the subscriptions that are currently active for the given url
+
+        Args:
+            url (str): the url the subscriber is checking
+            now (float): the current time in seconds since the epoch, as if from `time.time()`
+
+        Returns:
+            str, None: the authorization header to use, if any
+        """
+
+    async def setup_set_subscriptions_authorization(
+        self, /, *, url: str, strong_etag: StrongEtag, now: float
+    ) -> Optional[str]:
+        """Provides the authorization header that the subscriber should use to
+        set the subscriptions that are currently active for the given url
+
+        Unlike with the checking side which might compare the user being
+        authenticated with vs the topics, there is generally no reason to need
+        to view the specific globs/topics that are being subscribed to for
+        generating the authorization token, as if they are not valid it will
+        be caught by the broadcaster
+
+        Args:
+            url (str): the url the subscriber is setting
+            strong_etag (StrongEtag): the strong etag of the subscriptions being set
+            now (float): the current time in seconds since the epoch, as if from `time.time()`
+
+        Returns:
+            str, None: the authorization header to use, if any
+        """
+
 
 class AuthConfig(IncomingAuthConfig, OutgoingAuthConfig, Protocol): ...
 
@@ -171,6 +208,23 @@ class AuthConfigFromParts:
         return await self.outgoing.setup_notify_authorization(
             topic=topic,
             message_sha512=message_sha512,
+            now=now,
+        )
+
+    async def setup_check_subscriptions_authorization(
+        self, /, *, url: str, now: float
+    ) -> Optional[str]:
+        return await self.outgoing.setup_check_subscriptions_authorization(
+            url=url,
+            now=now,
+        )
+
+    async def setup_set_subscriptions_authorization(
+        self, /, *, url: str, strong_etag: StrongEtag, now: float
+    ) -> Optional[str]:
+        return await self.outgoing.setup_set_subscriptions_authorization(
+            url=url,
+            strong_etag=strong_etag,
             now=now,
         )
 

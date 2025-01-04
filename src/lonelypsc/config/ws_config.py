@@ -1,6 +1,8 @@
 import asyncio
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Protocol, Tuple, Type
 
+from lonelypsp.stateless.make_strong_etag import StrongEtag
+
 from lonelypsc.config.auth_config import AuthConfig
 from lonelypsc.config.config import PubSubBroadcasterConfig
 
@@ -561,6 +563,23 @@ class WebsocketPubSubConfigFromParts:
         return await self.auth.setup_notify_authorization(
             topic=topic,
             message_sha512=message_sha512,
+            now=now,
+        )
+
+    async def setup_check_subscriptions_authorization(
+        self, /, *, url: str, now: float
+    ) -> Optional[str]:
+        return await self.auth.setup_check_subscriptions_authorization(
+            url=url,
+            now=now,
+        )
+
+    async def setup_set_subscriptions_authorization(
+        self, /, *, url: str, strong_etag: StrongEtag, now: float
+    ) -> Optional[str]:
+        return await self.auth.setup_set_subscriptions_authorization(
+            url=url,
+            strong_etag=strong_etag,
             now=now,
         )
 

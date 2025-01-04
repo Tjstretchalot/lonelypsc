@@ -7,6 +7,8 @@ import sqlite3
 import time
 from typing import TYPE_CHECKING, Literal, Optional, Protocol, Tuple, Type, Union, cast
 
+from lonelypsp.stateless.make_strong_etag import StrongEtag
+
 from lonelypsc.config.auth_config import IncomingAuthConfig, OutgoingAuthConfig
 
 
@@ -382,6 +384,46 @@ class OutgoingHmacAuth:
                 len(topic).to_bytes(2, "big"),
                 topic,
                 message_sha512,
+            ]
+        )
+        return self._sign(to_sign, nonce, now)
+
+    async def setup_check_subscriptions_authorization(
+        self, /, *, url: str, now: float
+    ) -> Optional[str]:
+        nonce = self._make_nonce()
+        encoded_url = url.encode("utf-8")
+        encoded_timestamp = int(now).to_bytes(8, "big")
+        encoded_nonce = nonce.encode("utf-8")
+
+        to_sign = b"".join(
+            [
+                encoded_timestamp,
+                len(encoded_nonce).to_bytes(1, "big"),
+                encoded_nonce,
+                len(encoded_url).to_bytes(2, "big"),
+                encoded_url,
+            ]
+        )
+        return self._sign(to_sign, nonce, now)
+
+    async def setup_set_subscriptions_authorization(
+        self, /, *, url: str, strong_etag: StrongEtag, now: float
+    ) -> Optional[str]:
+        nonce = self._make_nonce()
+        encoded_url = url.encode("utf-8")
+        encoded_etag = strong_etag.format.to_bytes(1, "big") + strong_etag.etag
+        encoded_timestamp = int(now).to_bytes(8, "big")
+        encoded_nonce = nonce.encode("utf-8")
+
+        to_sign = b"".join(
+            [
+                encoded_timestamp,
+                len(encoded_nonce).to_bytes(1, "big"),
+                encoded_nonce,
+                len(encoded_url).to_bytes(2, "big"),
+                encoded_url,
+                encoded_etag,
             ]
         )
         return self._sign(to_sign, nonce, now)

@@ -22,6 +22,8 @@ from typing import (
     overload,
 )
 
+from lonelypsp.compat import fast_dataclass
+from lonelypsp.stateless.make_strong_etag import StrongEtag
 from lonelypsp.util.cancel_and_check import cancel_and_check
 from lonelypsp.util.drainable_asyncio_queue import DrainableAsyncioQueue
 
@@ -29,6 +31,7 @@ from lonelypsc.types.sync_io import (
     SyncReadableBytesIO,
     SyncStandardIO,
 )
+from lonelypsc.util.errors import combine_multiple_exceptions
 from lonelypsc.util.io_helpers import PositionedSyncStandardIO
 
 try:
@@ -457,37 +460,16 @@ class PubSubClientSubscription:
         async with self._state_lock:
             state = self.state
             assert state.type == _STATE_NOT_ENTERED, "already entered"
-            exact: Dict[bytes, int] = dict()
-            glob: Dict[str, int] = dict()
-            try:
-                for topic in state.exact:
-                    exact[topic] = await state.client.direct_subscribe_exact(
-                        topic=topic
-                    )
-                for gb in state.glob:
-                    glob[gb] = await state.client.direct_subscribe_glob(glob=gb)
-            except BaseException:
-                for sub_id in exact.values():
-                    try:
-                        await state.client.direct_unsubscribe_exact(
-                            subscription_id=sub_id
-                        )
-                    except BaseException:
-                        ...
-                for sub_id in glob.values():
-                    try:
-                        await state.client.direct_unsubscribe_glob(
-                            subscription_id=sub_id
-                        )
-                    except BaseException:
-                        ...
-                raise
+            res = await state.client.direct_subscribe_multiple(
+                exact=state.exact,
+                glob=state.glob,
+            )
 
             self.state = _PubSubClientSubscriptionStateEnteredNotBuffering(
                 type=_STATE_ENTERED_NOT_BUFFERING,
                 client=state.client,
-                exact=exact,
-                glob=glob,
+                exact=res.exact,
+                glob=res.glob,
                 on_receiving=state.on_receiving,
             )
 
@@ -880,6 +862,42 @@ class PubSubNotifyResult(Protocol):
         """
 
 
+class PubSubClientBulkSubscriptionConnector(Protocol):
+    """Something capable of setting the subscriptions in a single call; this
+    is an optional extension to the pub sub client connector and is assumed
+    to be setup/torn down in the same way as the base connector.
+
+    A connector exposes that they support this via `get_bulk()`
+    which returns `self` if its supported and `None` otherwise.
+
+    This incorporates a strong etag so that the subscriptions can be confirmed
+    to still be accurate without actually sending the full list of subscriptions
+    """
+
+    async def check_subscriptions(self) -> StrongEtag:
+        """Retrieves the strong etag describing the subscriptions active
+
+        Returns:
+            StrongEtag: the strong etag for the subscriptions
+        """
+
+    async def set_subscriptions(
+        self,
+        /,
+        *,
+        exact: List[bytes],
+        globs: List[str],
+    ) -> None:
+        """Replaces the subscriptions for the given url with those provided. This
+        is assumed to be for a small enough number of topics/globs that holding it
+        in memory is reasonable, given the client generally requires that anyway
+
+        Args:
+            topics (List[bytes]): the topics to subscribe to
+            globs (List[str]): the globs to subscribe to
+        """
+
+
 class PubSubClientConnector(Protocol):
     """Something capable of making subscribe/unsubscribe requests"""
 
@@ -946,6 +964,9 @@ class PubSubClientConnector(Protocol):
         glob should typically result in no errors and the same effect as a
         single call.
         """
+
+    def get_bulk(self) -> Optional[PubSubClientBulkSubscriptionConnector]:
+        """Returns a bulk subscription connector if supported, otherwise None"""
 
     async def notify(
         self,
@@ -1063,6 +1084,28 @@ class PubSubClientReceiver(Protocol):
         """
 
 
+@fast_dataclass
+class DirectSubscribeMultipleResult:
+    """The result of PubSubClient#direct_subscribe_multiple"""
+
+    glob: Dict[str, int]
+    """the glob subscriptions requested mapped to the id to unregister
+    the corresponding subscription
+    """
+
+    exact: Dict[bytes, int]
+    """the exact subscriptions requested mapped to the id to unregister
+    the corresponding subscription
+    """
+
+
+COST_PER_INDIV_REQ = 2**16
+"""The cost of making an individual request; unitless"""
+
+COST_PER_BULK_ITEM = 128
+"""The cost per each item within a bulk request; unitless"""
+
+
 class PubSubClient:
     def __init__(
         self,
@@ -1149,6 +1192,16 @@ class PubSubClient:
             excs.append(e)
 
         async with self._subscribing_lock:
+            if (bulk := self.connector.get_bulk()) is not None:
+                try:
+                    await bulk.set_subscriptions(exact=[], globs=[])
+                    self.exact_subscriptions = dict()
+                    self.active_exact_subscriptions = dict()
+                    self.glob_subscriptions = dict()
+                    self.active_glob_subscriptions = dict()
+                except BaseException as e:
+                    excs.append(e)
+
             for topic in self.exact_subscriptions.keys():
                 try:
                     await self.connector.unsubscribe_exact(topic=topic)
@@ -1160,10 +1213,10 @@ class PubSubClient:
                 except BaseException as e:
                     excs.append(e)
 
-            self.exact_subscriptions = {}
-            self.active_exact_subscriptions = {}
-            self.glob_subscriptions = {}
-            self.active_glob_subscriptions = {}
+            self.exact_subscriptions = dict()
+            self.active_exact_subscriptions = dict()
+            self.glob_subscriptions = dict()
+            self.active_glob_subscriptions = dict()
 
         try:
             await self.connector.teardown_connector()
@@ -1200,6 +1253,20 @@ class PubSubClient:
         self.active_exact_subscriptions[my_id] = topic
         return "ok"
 
+    async def _direct_subscribe_exact_via_individual(self, /, *, topic: bytes) -> int:
+        assert self._entered, "not entered"
+        my_id = self._reserve_subscription_id()
+        result = await self._try_direct_subscribe_exact(
+            topic=topic, my_id=my_id, have_lock=False
+        )
+        if result == "need_lock":
+            async with self._subscribing_lock:
+                result = await self._try_direct_subscribe_exact(
+                    topic=topic, my_id=my_id, have_lock=True
+                )
+        assert result == "ok"
+        return my_id
+
     async def _try_direct_subscribe_glob(
         self, /, *, glob: str, my_id: int, have_lock: bool
     ) -> Literal["ok", "need_lock"]:
@@ -1213,6 +1280,20 @@ class PubSubClient:
         self.glob_subscriptions[glob] = max(1, requests_so_far + 1)
         self.active_glob_subscriptions[my_id] = glob
         return "ok"
+
+    async def _direct_subscribe_glob_via_individual(self, /, *, glob: str) -> int:
+        assert self._entered, "not entered"
+        my_id = self._reserve_subscription_id()
+        result = await self._try_direct_subscribe_glob(
+            glob=glob, my_id=my_id, have_lock=False
+        )
+        if result == "need_lock":
+            async with self._subscribing_lock:
+                result = await self._try_direct_subscribe_glob(
+                    glob=glob, my_id=my_id, have_lock=True
+                )
+        assert result == "ok"
+        return my_id
 
     async def _try_direct_unsubscribe_exact(
         self, /, *, subscription_id: int, have_lock: bool
@@ -1234,11 +1315,81 @@ class PubSubClient:
 
         if need_unsubscribe:
             await self.connector.unsubscribe_exact(topic=topic)
-            # we hold the lock so it shouldn't have changed, but we can recheck anyway
-            requests_so_far = self.exact_subscriptions[topic]
-            if requests_so_far <= 0:
-                del self.exact_subscriptions[topic]
+            assert self.exact_subscriptions[topic] <= 0
+            del self.exact_subscriptions[topic]
 
+        return "ok"
+
+    async def _direct_unsubscribe_exact_via_individual(
+        self, /, *, subscription_id: int
+    ) -> None:
+        assert self._entered, "not entered"
+        result = await self._try_direct_unsubscribe_exact(
+            subscription_id=subscription_id, have_lock=False
+        )
+        if result == "need_lock":
+            async with self._subscribing_lock:
+                result = await self._try_direct_unsubscribe_exact(
+                    subscription_id=subscription_id, have_lock=True
+                )
+        assert result == "ok"
+
+    async def _direct_set_subscriptions(
+        self, bulk: PubSubClientBulkSubscriptionConnector
+    ) -> None:
+        """sets the subscriptions to what we expect; should have the lock"""
+        await bulk.set_subscriptions(
+            exact=list(k for k, v in self.exact_subscriptions.items() if v > 0),
+            globs=list(k for k, v in self.glob_subscriptions.items() if v > 0),
+        )
+
+        topics_to_rem: List[bytes] = []
+        for topic, num_requests in self.exact_subscriptions.items():
+            if num_requests <= 0:
+                topics_to_rem.append(topic)
+        for topic in topics_to_rem:
+            del self.exact_subscriptions[topic]
+
+        globs_to_rem: List[str] = []
+        for glob, num_requests in self.glob_subscriptions.items():
+            if num_requests <= 0:
+                globs_to_rem.append(glob)
+        for glob in globs_to_rem:
+            del self.glob_subscriptions[glob]
+
+    async def _try_direct_unsubscribe_exact_via_bulk(
+        self, /, *, subscription_id: int, have_lock: bool
+    ) -> Literal["ok", "unsupported", "not_desirable", "need_lock"]:
+        assert self._entered, "not entered"
+
+        topic = self.active_exact_subscriptions.get(subscription_id)
+        if topic is None:
+            return "ok"
+
+        num_requests = self.exact_subscriptions.get(topic, 0)
+        if num_requests > 1:
+            del self.active_exact_subscriptions[subscription_id]
+            self.exact_subscriptions[topic] = num_requests - 1
+            return "ok"
+
+        if (bulk := self.connector.get_bulk()) is None:
+            return "unsupported"
+
+        cost_for_individual = COST_PER_INDIV_REQ
+        cost_for_bulk = COST_PER_BULK_ITEM * (
+            (len(self.active_exact_subscriptions) - 1)
+            + len(self.active_glob_subscriptions)
+        )
+        if cost_for_individual < cost_for_bulk:
+            return "not_desirable"
+
+        if not have_lock:
+            return "need_lock"
+
+        del self.active_exact_subscriptions[subscription_id]
+        self.exact_subscriptions[topic] = 0
+
+        await self._direct_set_subscriptions(bulk)
         return "ok"
 
     async def _try_direct_unsubscribe_glob(
@@ -1258,11 +1409,183 @@ class PubSubClient:
 
         if need_unsubscribe:
             await self.connector.unsubscribe_glob(glob=glob)
-            requests_so_far = self.glob_subscriptions[glob]
-            if requests_so_far <= 0:
-                del self.glob_subscriptions[glob]
+            assert self.glob_subscriptions[glob] <= 0
+            del self.glob_subscriptions[glob]
 
         return "ok"
+
+    async def _direct_unsubscribe_glob_via_individual(
+        self, /, *, subscription_id: int
+    ) -> None:
+        assert self._entered, "not entered"
+        result = await self._try_direct_unsubscribe_glob(
+            subscription_id=subscription_id, have_lock=False
+        )
+        if result == "need_lock":
+            async with self._subscribing_lock:
+                result = await self._try_direct_unsubscribe_glob(
+                    subscription_id=subscription_id, have_lock=True
+                )
+        assert result == "ok"
+
+    async def _try_direct_unsubscribe_glob_via_bulk(
+        self, /, *, subscription_id: int, have_lock: bool
+    ) -> Literal["ok", "unsupported", "not_desirable", "need_lock"]:
+        assert self._entered, "not entered"
+
+        glob = self.active_glob_subscriptions.get(subscription_id)
+        if glob is None:
+            return "ok"
+
+        num_requests = self.glob_subscriptions.get(glob, 0)
+        if num_requests > 1:
+            del self.active_glob_subscriptions[subscription_id]
+            self.glob_subscriptions[glob] = num_requests - 1
+            return "ok"
+
+        if (bulk := self.connector.get_bulk()) is None:
+            return "unsupported"
+
+        cost_for_individual = COST_PER_INDIV_REQ
+        cost_for_bulk = COST_PER_BULK_ITEM * (
+            len(self.active_exact_subscriptions)
+            + (len(self.active_glob_subscriptions) - 1)
+        )
+        if cost_for_individual < cost_for_bulk:
+            return "not_desirable"
+
+        if not have_lock:
+            return "need_lock"
+
+        del self.active_glob_subscriptions[subscription_id]
+        self.glob_subscriptions[glob] = 0
+
+        await self._direct_set_subscriptions(bulk)
+        return "ok"
+
+    async def _try_direct_subscribe_multiple_via_individual_calls(
+        self,
+        /,
+        *,
+        exact: Iterable[bytes],
+        glob: Iterable[str],
+    ) -> DirectSubscribeMultipleResult:
+        result = DirectSubscribeMultipleResult(
+            exact=dict(),
+            glob=dict(),
+        )
+        try:
+            for topic in exact:
+                result.exact[topic] = await self._direct_subscribe_exact_via_individual(
+                    topic=topic
+                )
+            for gb in glob:
+                result.glob[gb] = await self._direct_subscribe_glob_via_individual(
+                    glob=gb
+                )
+            return result
+        except BaseException as context:
+            unrelated: List[BaseException] = []
+
+            for sub_id in result.exact.values():
+                try:
+                    await self._direct_unsubscribe_exact_via_individual(
+                        subscription_id=sub_id
+                    )
+                except BaseException as e:
+                    unrelated.append(e)
+            for sub_id in result.glob.values():
+                try:
+                    await self._direct_unsubscribe_glob_via_individual(
+                        subscription_id=sub_id
+                    )
+                except BaseException as e:
+                    unrelated.append(e)
+
+            raise combine_multiple_exceptions(
+                "failed to subscribe via multiple subscribe calls",
+                unrelated,
+                context=context,
+            )
+
+    async def _try_direct_subscribe_multiple_via_bulk_call_if_efficient(
+        self,
+        /,
+        *,
+        exact: Iterable[bytes],
+        glob: Iterable[str],
+    ) -> Optional[DirectSubscribeMultipleResult]:
+        bulk = self.connector.get_bulk()
+        if bulk is None:
+            return None
+
+        to_add = 0
+        for topic in exact:
+            if self.exact_subscriptions.get(topic, 0) <= 0:
+                to_add += 1
+
+        for gb in glob:
+            if self.glob_subscriptions.get(gb, 0) <= 0:
+                to_add += 1
+
+        cost_bulk = COST_PER_BULK_ITEM * (
+            len(self.active_exact_subscriptions)
+            + len(self.active_glob_subscriptions)
+            + to_add
+        )
+        cost_indiv = COST_PER_INDIV_REQ * to_add
+
+        if cost_indiv < cost_bulk:
+            return None
+
+        async with self._subscribing_lock:
+            result = DirectSubscribeMultipleResult(glob=dict(), exact=dict())
+
+            for topic in exact:
+                sub_id = self._reserve_subscription_id()
+                self.active_exact_subscriptions[sub_id] = topic
+                result.exact[topic] = sub_id
+                self.exact_subscriptions[topic] = (
+                    max(self.exact_subscriptions.get(topic, 0), 0) + 1
+                )
+
+            for glob in glob:
+                sub_id = self._reserve_subscription_id()
+                self.active_glob_subscriptions[sub_id] = glob
+                result.glob[glob] = sub_id
+                self.glob_subscriptions[glob] = (
+                    max(self.glob_subscriptions.get(glob, 0), 0) + 1
+                )
+
+            await self._direct_set_subscriptions(bulk)
+            return result
+
+    async def direct_subscribe_multiple(
+        self,
+        /,
+        exact: Iterable[bytes],
+        glob: Iterable[str],
+    ) -> DirectSubscribeMultipleResult:
+        """Subscribes to multiple topics and glob patterns at the same time,
+        returning the corresponding ids for unregistering the subscriptions.
+        This may be more efficient or more resilient than multiple calls to
+        the individual methods, depending on the connection type.
+
+        Args:
+            exact (Iterable[bytes]): the topics to subscribe to
+            glob (Iterable[str]): the glob patterns to subscribe to
+
+        Returns:
+            DirectSubscribeMultipleResult: the ids to unregister the subscriptions
+        """
+        result = await self._try_direct_subscribe_multiple_via_bulk_call_if_efficient(
+            exact=exact, glob=glob
+        )
+        if result is None:
+            result = await self._try_direct_subscribe_multiple_via_individual_calls(
+                exact=exact, glob=glob
+            )
+        return result
 
     async def direct_subscribe_exact(self, /, *, topic: bytes) -> int:
         """If we are not already subscribed to the given topic, subscribe to it.
@@ -1284,18 +1607,9 @@ class PubSubClient:
         WARN:
             on error it may be ambiguous if we are subscribed or not
         """
-        assert self._entered, "not entered"
-        my_id = self._reserve_subscription_id()
-        result = await self._try_direct_subscribe_exact(
-            topic=topic, my_id=my_id, have_lock=False
-        )
-        if result == "need_lock":
-            async with self._subscribing_lock:
-                result = await self._try_direct_subscribe_exact(
-                    topic=topic, my_id=my_id, have_lock=True
-                )
-        assert result == "ok"
-        return my_id
+        return (await self.direct_subscribe_multiple(exact=[topic], glob=[])).exact[
+            topic
+        ]
 
     async def direct_subscribe_glob(self, /, *, glob: str) -> int:
         """If we are not already subscribed to the given glob, subscribe to it.
@@ -1323,18 +1637,7 @@ class PubSubClient:
             around, and duplication from network errors needs to be handled
             anyway so should not cause logic errors
         """
-        assert self._entered, "not entered"
-        my_id = self._reserve_subscription_id()
-        result = await self._try_direct_subscribe_glob(
-            glob=glob, my_id=my_id, have_lock=False
-        )
-        if result == "need_lock":
-            async with self._subscribing_lock:
-                result = await self._try_direct_subscribe_glob(
-                    glob=glob, my_id=my_id, have_lock=True
-                )
-        assert result == "ok"
-        return my_id
+        return (await self.direct_subscribe_multiple(exact=[], glob=[glob])).glob[glob]
 
     async def direct_unsubscribe_exact(self, /, *, subscription_id: int) -> None:
         """If the subscription id was returned from `direct_subscribe_exact`, and
@@ -1351,16 +1654,21 @@ class PubSubClient:
             unsubscribing via an async context manager. otherwise, cleanup is
             both tedious and error-prone
         """
-        assert self._entered, "not entered"
-        result = await self._try_direct_unsubscribe_exact(
+        result = await self._try_direct_unsubscribe_exact_via_bulk(
             subscription_id=subscription_id, have_lock=False
         )
-        if result == "need_lock":
-            async with self._subscribing_lock:
+        if result == "ok":
+            return
+
+        async with self._subscribing_lock:
+            result = await self._try_direct_unsubscribe_exact_via_bulk(
+                subscription_id=subscription_id, have_lock=True
+            )
+            if result != "ok":
                 result = await self._try_direct_unsubscribe_exact(
                     subscription_id=subscription_id, have_lock=True
                 )
-        assert result == "ok"
+            assert result == "ok"
 
     async def direct_unsubscribe_glob(self, /, *, subscription_id: int) -> None:
         """If the subscription id was returned from `direct_subscribe_glob`, and
@@ -1377,16 +1685,21 @@ class PubSubClient:
             unsubscribing via an async context manager. otherwise, cleanup is
             both tedious and error-prone
         """
-        assert self._entered, "not entered"
-        result = await self._try_direct_unsubscribe_glob(
+        result = await self._try_direct_unsubscribe_glob_via_bulk(
             subscription_id=subscription_id, have_lock=False
         )
-        if result == "need_lock":
-            async with self._subscribing_lock:
+        if result == "ok":
+            return
+
+        async with self._subscribing_lock:
+            result = await self._try_direct_unsubscribe_glob_via_bulk(
+                subscription_id=subscription_id, have_lock=True
+            )
+            if result != "ok":
                 result = await self._try_direct_unsubscribe_glob(
                     subscription_id=subscription_id, have_lock=True
                 )
-        assert result == "ok"
+            assert result == "ok"
 
     async def direct_register_on_message(
         self, /, *, receiver: PubSubDirectOnMessageWithCleanupReceiver

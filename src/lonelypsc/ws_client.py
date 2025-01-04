@@ -25,6 +25,7 @@ from lonelypsp.util.drainable_asyncio_queue import DrainableAsyncioQueue, QueueD
 
 from lonelypsc.client import (
     PubSubClient,
+    PubSubClientBulkSubscriptionConnector,
     PubSubClientConnectionStatus,
     PubSubClientConnector,
     PubSubClientMessageWithCleanup,
@@ -708,6 +709,10 @@ class WSPubSubConnectorReceiver:
                 type=ManagementTaskType.UNSUBSCRIBE_GLOB, glob=glob
             )
         )
+
+    def get_bulk(self) -> Optional[PubSubClientBulkSubscriptionConnector]:
+        """Returns a bulk subscription connector if supported, otherwise None"""
+        return None
 
     async def notify(
         self,

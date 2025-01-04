@@ -27,11 +27,13 @@ from aiohttp.typedefs import LooseHeaders
 from fastapi import APIRouter, Header
 from fastapi.requests import Request
 from fastapi.responses import Response
+from lonelypsp.stateless.make_strong_etag import StrongEtag, make_strong_etag
 from lonelypsp.util.cancel_and_check import cancel_and_check
 from starlette.background import BackgroundTask
 
 from lonelypsc.client import (
     PubSubClient,
+    PubSubClientBulkSubscriptionConnector,
     PubSubClientConnectionStatus,
     PubSubClientConnector,
     PubSubClientMessageWithCleanup,
@@ -431,6 +433,92 @@ class HttpPubSubClientConnector:
             path="/v1/unsubscribe/glob",
             body=body.getvalue(),
             special_ok_codes={409},
+        )
+        self._raise_for_error(result)
+
+    def get_bulk(self) -> Optional[PubSubClientBulkSubscriptionConnector]:
+        return self
+
+    async def check_subscriptions(self) -> StrongEtag:
+        assert self._session is not None, "not set up"
+        receive_url = self._receive_url
+
+        auth_at = time.time()
+        authorization = await self.config.setup_check_subscriptions_authorization(
+            url=receive_url, now=auth_at
+        )
+        headers: Dict[str, str] = {
+            "Content-Type": "application/octet-stream",
+        }
+        if authorization is not None:
+            headers["Authorization"] = authorization
+
+        encoded_receive_url = receive_url.encode("utf-8")
+
+        body = io.BytesIO()
+        body.write(len(encoded_receive_url).to_bytes(2, "big", signed=False))
+        body.write(encoded_receive_url)
+
+        result = await self._make_small_request(
+            method="POST",
+            headers=headers,
+            path="/v1/check_subscriptions",
+            body=body.getvalue(),
+            special_ok_codes=set(),
+        )
+        self._raise_for_error(result)
+        assert isinstance(result, bytes), "impossible"
+
+        if result[0] != 0:
+            raise ValueError("invalid strong etag format")
+
+        return StrongEtag(format=0, etag=result[1:])
+
+    async def set_subscriptions(
+        self,
+        /,
+        *,
+        exact: List[bytes],
+        globs: List[str],
+    ) -> None:
+        assert self._session is not None, "not set up"
+        receive_url = self._receive_url
+
+        strong_etag = make_strong_etag(receive_url, exact, globs)
+
+        auth_at = time.time()
+        authorization = await self.config.setup_set_subscriptions_authorization(
+            url=receive_url, strong_etag=strong_etag, now=auth_at
+        )
+        headers: Dict[str, str] = {
+            "Content-Type": "application/octet-stream",
+        }
+        if authorization is not None:
+            headers["Authorization"] = authorization
+
+        encoded_receive_url = receive_url.encode("utf-8")
+        body = io.BytesIO()
+        body.write(len(encoded_receive_url).to_bytes(2, "big", signed=False))
+        body.write(encoded_receive_url)
+        body.write(strong_etag.format.to_bytes(1, "big", signed=False))
+        body.write(strong_etag.etag)
+        body.write(len(exact).to_bytes(4, "big", signed=False))
+        for topic in exact:
+            body.write(len(topic).to_bytes(2, "big", signed=False))
+            body.write(topic)
+
+        body.write(len(globs).to_bytes(4, "big", signed=False))
+        for glob in globs:
+            encoded_glob = glob.encode("utf-8")
+            body.write(len(encoded_glob).to_bytes(2, "big", signed=False))
+            body.write(encoded_glob)
+
+        result = await self._make_small_request(
+            method="POST",
+            headers=headers,
+            path="/v1/set_subscriptions",
+            body=body.getvalue(),
+            special_ok_codes=set(),
         )
         self._raise_for_error(result)
 

@@ -1,6 +1,8 @@
 import hmac
 from typing import TYPE_CHECKING, Literal, Optional, Type
 
+from lonelypsp.stateless.make_strong_etag import StrongEtag
+
 from lonelypsc.config.auth_config import IncomingAuthConfig, OutgoingAuthConfig
 
 
@@ -61,6 +63,16 @@ class OutgoingTokenAuth:
 
     async def setup_notify_authorization(
         self, /, *, topic: bytes, message_sha512: bytes, now: float
+    ) -> Optional[str]:
+        return self.authorization
+
+    async def setup_check_subscriptions_authorization(
+        self, /, *, url: str, now: float
+    ) -> Optional[str]:
+        return self.authorization
+
+    async def setup_set_subscriptions_authorization(
+        self, /, *, url: str, strong_etag: StrongEtag, now: float
     ) -> Optional[str]:
         return self.authorization
 
