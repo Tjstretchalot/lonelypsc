@@ -482,9 +482,12 @@ class HttpPubSubClientConnector:
         globs: List[str],
     ) -> None:
         assert self._session is not None, "not set up"
+        exact = sorted(exact)
+        globs = sorted(globs)
+
         receive_url = self._receive_url
 
-        strong_etag = make_strong_etag(receive_url, exact, globs)
+        strong_etag = make_strong_etag(receive_url, exact, globs, recheck_sort=False)
 
         auth_at = time.time()
         authorization = await self.config.setup_set_subscriptions_authorization(
