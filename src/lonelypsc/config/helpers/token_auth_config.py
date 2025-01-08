@@ -19,6 +19,17 @@ class IncomingTokenAuth:
     async def setup_incoming_auth(self) -> None: ...
     async def teardown_incoming_auth(self) -> None: ...
 
+    def _check(
+        self, authorization: Optional[str]
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        if authorization is None:
+            return "unauthorized"
+
+        if not hmac.compare_digest(authorization, self.authorization):
+            return "forbidden"
+
+        return "ok"
+
     async def is_receive_allowed(
         self,
         /,
@@ -29,13 +40,18 @@ class IncomingTokenAuth:
         now: float,
         authorization: Optional[str],
     ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
-        if authorization is None:
-            return "unauthorized"
+        return self._check(authorization)
 
-        if not hmac.compare_digest(authorization, self.authorization):
-            return "forbidden"
-
-        return "ok"
+    async def is_missed_allowed(
+        self,
+        /,
+        *,
+        recovery: str,
+        topic: bytes,
+        now: float,
+        authorization: Optional[str],
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        return self._check(authorization)
 
 
 class OutgoingTokenAuth:
@@ -52,12 +68,12 @@ class OutgoingTokenAuth:
     async def teardown_outgoing_auth(self) -> None: ...
 
     async def setup_subscribe_exact_authorization(
-        self, /, *, url: str, exact: bytes, now: float
+        self, /, *, url: str, recovery: Optional[str], exact: bytes, now: float
     ) -> Optional[str]:
         return self.authorization
 
     async def setup_subscribe_glob_authorization(
-        self, /, *, url: str, glob: str, now: float
+        self, /, *, url: str, recovery: Optional[str], glob: str, now: float
     ) -> Optional[str]:
         return self.authorization
 

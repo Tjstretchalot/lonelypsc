@@ -2,6 +2,7 @@ import asyncio
 import io
 import os
 import secrets
+import sys
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import (
@@ -10,6 +11,7 @@ from typing import (
     Iterable,
     List,
     Literal,
+    NoReturn,
     Optional,
     Tuple,
     Type,
@@ -72,6 +74,11 @@ from lonelypsc.ws.state import (
     TasksOnceOpen,
 )
 from lonelypsc.ws.websocket_connect_task import make_websocket_connect_task
+
+if sys.version_info >= (3, 11):
+    from typing import Never
+else:
+    from typing import NoReturn as Never
 
 
 @fast_dataclass
@@ -319,8 +326,9 @@ class WSPubSubConnectorReceiver:
         received_queue: DrainableAsyncioQueue[ReceivedMessage] = DrainableAsyncioQueue(
             max_size=state.config.max_received
         )
+        received_missed: asyncio.Event = asyncio.Event()
         received_task = asyncio.create_task(
-            self._handle_received_task_target(received_queue)
+            self._handle_received_task_target(received_queue, received_missed)
         )
 
         while True:
@@ -359,10 +367,12 @@ class WSPubSubConnectorReceiver:
                 handler_error = e
                 state.ws_state = StateClosed(type=StateType.CLOSED)
 
-            connection_status = PubSubClientConnectionStatus.LOST
+            connection_statuses: List[PubSubClientConnectionStatus] = [
+                PubSubClientConnectionStatus.LOST
+            ]
 
             if received_task.done():
-                connection_status = PubSubClientConnectionStatus.ABANDONED
+                connection_statuses = [PubSubClientConnectionStatus.ABANDONED]
                 exc = received_task.exception()
                 if exc is not None:
                     receiver_errors.append(exc)
@@ -374,7 +384,7 @@ class WSPubSubConnectorReceiver:
                 state.ws_state.type != StateType.CLOSED
                 and state.ws_state.cancel_requested.is_set()
             ):
-                connection_status = PubSubClientConnectionStatus.ABANDONED
+                connection_statuses = [PubSubClientConnectionStatus.ABANDONED]
             elif (
                 state.ws_state.type == StateType.OPEN
                 # if there are no unsent management tasks and all the acks can be explained by sent
@@ -382,32 +392,45 @@ class WSPubSubConnectorReceiver:
                 and state.ws_state.management_tasks.qsize() == 0
                 and len(state.ws_state.expected_acks)
                 <= len(state.ws_state.sent_notifications)
-                and not state.connection_lost_flag
             ):
-                connection_status = PubSubClientConnectionStatus.OK
+                if state.connection_lost_flag or received_missed.is_set():
+                    connection_statuses = [
+                        PubSubClientConnectionStatus.LOST,
+                        PubSubClientConnectionStatus.OK,
+                    ]
+                else:
+                    connection_statuses = [PubSubClientConnectionStatus.OK]
             elif state.ws_state.type == StateType.CLOSED:
-                connection_status = PubSubClientConnectionStatus.ABANDONED
+                connection_statuses = [PubSubClientConnectionStatus.ABANDONED]
 
             state.connection_lost_flag = False
+            received_missed.clear()
 
-            if connection_status != receivers_expect:
+            for connection_status in connection_statuses:
+                if connection_status == receivers_expect:
+                    continue
                 await self._inform_status_receivers(
-                    connection_status, state.status_receivers.values(), receiver_errors
+                    connection_status,
+                    state.status_receivers.values(),
+                    receiver_errors,
                 )
                 receivers_expect = connection_status
 
-                if receiver_errors:
-                    if receivers_expect != PubSubClientConnectionStatus.ABANDONED:
-                        await self._inform_status_receivers(
-                            PubSubClientConnectionStatus.ABANDONED,
-                            state.status_receivers.values(),
-                            receiver_errors,
-                        )
+                if not receiver_errors:
+                    continue
 
-                    if state.ws_state.type != StateType.CLOSED:
-                        state.ws_state.cancel_requested.set()
+                if receivers_expect != PubSubClientConnectionStatus.ABANDONED:
+                    await self._inform_status_receivers(
+                        PubSubClientConnectionStatus.ABANDONED,
+                        state.status_receivers.values(),
+                        receiver_errors,
+                    )
 
-                    receivers_expect = PubSubClientConnectionStatus.ABANDONED
+                if state.ws_state.type != StateType.CLOSED:
+                    state.ws_state.cancel_requested.set()
+
+                receivers_expect = PubSubClientConnectionStatus.ABANDONED
+                break
 
             if state.ws_state.type != StateType.OPEN:
                 if old_received is not None:
@@ -433,6 +456,9 @@ class WSPubSubConnectorReceiver:
                 if should_process:
                     old_error_count = len(receiver_errors)
                     for message in unprocessed:
+                        if message.type == ReceivedMessageType.MISSED:
+                            continue
+
                         await self._handle_received_message(
                             message, state.message_receivers.values(), receiver_errors
                         )
@@ -474,7 +500,7 @@ class WSPubSubConnectorReceiver:
                 errors.append(e)
 
     async def _handle_received_task_target(
-        self, queue: AsyncQueueLike[ReceivedMessage]
+        self, queue: AsyncQueueLike[ReceivedMessage], received_missed: asyncio.Event
     ) -> None:
         """target for received_task within _state_task_target; constantly pulls received
         messages from the queue and handles them
@@ -500,10 +526,14 @@ class WSPubSubConnectorReceiver:
                 await self._handle_received_small_message(
                     message, receivers_dict.values(), errors
                 )
-            else:
+            elif message.type == ReceivedMessageType.LARGE:
                 await self._handle_received_large_message(
                     message, receivers_dict.values(), errors
                 )
+            elif message.type == ReceivedMessageType.MISSED:
+                received_missed.set()
+            else:
+                _assert_never(message)
 
             if errors:
                 raise combine_multiple_exceptions(
@@ -512,13 +542,14 @@ class WSPubSubConnectorReceiver:
 
     async def _handle_received_message(
         self,
-        message: ReceivedMessage,
+        message: Union[ReceivedSmallMessage, ReceivedLargeMessage],
         receivers: Iterable[PubSubDirectOnMessageWithCleanupReceiver],
         errors: List[BaseException],
     ) -> None:
-        """called primarily from _handle_received_task_target, and if that is
-        confirmed done(), this is called by _state_task_target with the final
-        messages, such that this is never called concurrently with itself
+        """normally received messages are handled in _handle_received_task_target,
+        and if that is confirmed done(), this is called by _state_task_target
+        with the final messages, such that this is never called concurrently
+        with itself
 
         tells every receiver about the message, and if any of them raise an error,
         puts that error in the given list to be merged and raised at the appropriate
@@ -911,6 +942,10 @@ def WebsocketPubSubClient(config: WebsocketPubSubConfig) -> PubSubClient:
 
 async def _noop() -> None:
     pass
+
+
+def _assert_never(_: Never) -> NoReturn:
+    raise AssertionError("unreachable")
 
 
 if TYPE_CHECKING:

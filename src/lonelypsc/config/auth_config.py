@@ -45,6 +45,32 @@ class IncomingAuthConfig(Protocol):
               the message will be dropped.
         """
 
+    async def is_missed_allowed(
+        self,
+        /,
+        *,
+        recovery: str,
+        topic: bytes,
+        now: float,
+        authorization: Optional[str],
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        """Determines if the indication that the subscriber may have missed a
+        message from a broadcaster is allowed. This allows the subscriber to
+        trigger a recovery mechanism to get back into a consistent state.
+
+        Args:
+            recovery (str): the url the missed message was sent to
+            topic (bytes): the topic the message was on
+            now (float): the current time in seconds since the epoch, as if from `time.time()`
+            authorization (str, None): the authorization header they provided
+
+        Returns:
+            `ok`: if the message is allowed
+            `unauthorized`: if the authorization header is required but not provided
+            `forbidden`: if the authorization header is provided but invalid
+            `unavailable`: if a service is required to check this isn't available
+        """
+
 
 class OutgoingAuthConfig(Protocol):
     async def setup_outgoing_auth(self) -> None:
@@ -60,13 +86,15 @@ class OutgoingAuthConfig(Protocol):
         """
 
     async def setup_subscribe_exact_authorization(
-        self, /, *, url: str, exact: bytes, now: float
+        self, /, *, url: str, recovery: Optional[str], exact: bytes, now: float
     ) -> Optional[str]:
         """Provides the authorization header that the subscriber should use to
         subscribe to a specific topic at the given url.
 
         Args:
             url (str): the url the subscriber is subscribing to
+            recovery (str, None): the url that will receive MISSED messages for this
+                subscription, if any
             exact (bytes): the exact topic they are subscribing to
             now (float): the current time in seconds since the epoch, as if from `time.time()`
 
@@ -75,13 +103,15 @@ class OutgoingAuthConfig(Protocol):
         """
 
     async def setup_subscribe_glob_authorization(
-        self, /, *, url: str, glob: str, now: float
+        self, /, *, url: str, recovery: Optional[str], glob: str, now: float
     ) -> Optional[str]:
         """Provides the authoirzation header that the subscriber should use to subscribe
         to any topic that matches the given glob at the given url.
 
         Args:
             url (str): the url the subscriber is subscribing to
+            recovery (str, None): the url that will receive MISSED messages for this
+                subscription, if any
             glob (str): the glob pattern they are subscribing to
             now (float): the current time in seconds since the epoch, as if from `time.time()`
 
@@ -184,20 +214,38 @@ class AuthConfigFromParts:
             authorization=authorization,
         )
 
+    async def is_missed_allowed(
+        self,
+        /,
+        *,
+        recovery: str,
+        topic: bytes,
+        now: float,
+        authorization: Optional[str],
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        return await self.incoming.is_missed_allowed(
+            recovery=recovery,
+            topic=topic,
+            now=now,
+            authorization=authorization,
+        )
+
     async def setup_subscribe_exact_authorization(
-        self, /, *, url: str, exact: bytes, now: float
+        self, /, *, url: str, recovery: Optional[str], exact: bytes, now: float
     ) -> Optional[str]:
         return await self.outgoing.setup_subscribe_exact_authorization(
             url=url,
+            recovery=recovery,
             exact=exact,
             now=now,
         )
 
     async def setup_subscribe_glob_authorization(
-        self, /, *, url: str, glob: str, now: float
+        self, /, *, url: str, recovery: Optional[str], glob: str, now: float
     ) -> Optional[str]:
         return await self.outgoing.setup_subscribe_glob_authorization(
             url=url,
+            recovery=recovery,
             glob=glob,
             now=now,
         )

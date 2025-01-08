@@ -17,6 +17,7 @@ from lonelypsp.stateful.messages.confirm_unsubscribe import (
     B2S_ConfirmUnsubscribeGlob,
 )
 from lonelypsp.stateful.messages.continue_notify import B2S_ContinueNotify
+from lonelypsp.stateful.messages.missed import B2S_Missed
 from lonelypsp.stateful.messages.receive_stream import (
     B2S_ReceiveStreamStartCompressed,
     B2S_ReceiveStreamStartUncompressed,
@@ -534,6 +535,9 @@ class ReceivedMessageType(Enum):
     SMALL = auto()
     """The message is entirely in memory"""
 
+    MISSED = auto()
+    """The actual message was never sent"""
+
     LARGE = auto()
     """The message is in a stream"""
 
@@ -553,6 +557,17 @@ class ReceivedSmallMessage:
 
     sha512: bytes
     """the trusted 64-byte hash of the data"""
+
+
+@fast_dataclass
+class ReceivedMissedMessage:
+    """indicates that the broadcaster may not have sent a message it should have"""
+
+    type: Literal[ReceivedMessageType.MISSED]
+    """discriminator value"""
+
+    topic: bytes
+    """the topic the missed message may have been on"""
 
 
 @fast_dataclass
@@ -577,7 +592,9 @@ class ReceivedLargeMessage:
     """the trusted 64-byte hash of the data"""
 
 
-ReceivedMessage = Union[ReceivedSmallMessage, ReceivedLargeMessage]
+ReceivedMessage = Union[
+    ReceivedSmallMessage, ReceivedMissedMessage, ReceivedLargeMessage
+]
 
 
 class ReceivingState(Enum):
@@ -585,6 +602,9 @@ class ReceivingState(Enum):
 
     INCOMPLETE = auto()
     """Waiting for the rest of the message to come in"""
+
+    AUTHORIZING_MISSED = auto()
+    """Waiting for the authorization task to complete on a missed message"""
 
     AUTHORIZING = auto()
     """Waiting for the authorization task to complete"""
@@ -634,8 +654,26 @@ class ReceivingIncomplete:
 
 
 @fast_dataclass
+class ReceivingAuthorizingMissed:
+    """The subscriber has received a MISSED message and is waiting to verify that
+    the authorization is valid before proceeding
+    """
+
+    type: Literal[ReceivingState.AUTHORIZING_MISSED]
+    """disciminator value"""
+
+    message: B2S_Missed
+    """the message that was received"""
+
+    authorization_task: asyncio.Task[
+        Literal["ok", "unauthorized", "forbidden", "unavailable"]
+    ]
+    """the task the subscriber is waiting on to finish checking the messages authorization"""
+
+
+@fast_dataclass
 class ReceivingAuthorizing:
-    """We have received the entire message via RECEIVE_STREAM calls, verified that the
+    """The subscriber has received the entire RECEIVE via RECEIVE_STREAM calls, verified that the
     hash matches what was provided, and are waiting for the authorization task to complete
     before proceeding
 
@@ -699,6 +737,7 @@ class ReceivingDecompressing:
 
 Receiving = Union[
     ReceivingIncomplete,
+    ReceivingAuthorizingMissed,
     ReceivingAuthorizing,
     ReceivingWaitingCompressor,
     ReceivingDecompressing,

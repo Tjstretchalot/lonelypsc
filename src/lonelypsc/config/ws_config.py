@@ -539,20 +539,35 @@ class WebsocketPubSubConfigFromParts:
             authorization=authorization,
         )
 
+    async def is_missed_allowed(
+        self,
+        /,
+        *,
+        recovery: str,
+        topic: bytes,
+        now: float,
+        authorization: Optional[str],
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        return await self.auth.is_missed_allowed(
+            recovery=recovery, topic=topic, now=now, authorization=authorization
+        )
+
     async def setup_subscribe_exact_authorization(
-        self, /, *, url: str, exact: bytes, now: float
+        self, /, *, url: str, recovery: Optional[str], exact: bytes, now: float
     ) -> Optional[str]:
         return await self.auth.setup_subscribe_exact_authorization(
             url=url,
+            recovery=recovery,
             exact=exact,
             now=now,
         )
 
     async def setup_subscribe_glob_authorization(
-        self, /, *, url: str, glob: str, now: float
+        self, /, *, url: str, recovery: Optional[str], glob: str, now: float
     ) -> Optional[str]:
         return await self.auth.setup_subscribe_glob_authorization(
             url=url,
+            recovery=recovery,
             glob=glob,
             now=now,
         )

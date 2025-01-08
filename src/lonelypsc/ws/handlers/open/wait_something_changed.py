@@ -60,7 +60,10 @@ async def wait_something_changed(state: StateOpen) -> None:
             ...  # avoids a nesting level
         elif state.receiving.type == ReceivingState.INCOMPLETE:
             ...  # waiting on read_task
-        elif state.receiving.type == ReceivingState.AUTHORIZING:
+        elif (
+            state.receiving.type == ReceivingState.AUTHORIZING
+            or state.receiving.type == ReceivingState.AUTHORIZING_MISSED
+        ):
             other_tasks.append(state.receiving.authorization_task)
         elif state.receiving.type == ReceivingState.WAITING_COMPRESSOR:
             ...  # already have compressor tasks in other_tasks

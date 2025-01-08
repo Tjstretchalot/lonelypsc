@@ -27,6 +27,7 @@ from lonelypsc.ws.handlers.open.messages.enable_zstd_custom import (
 from lonelypsc.ws.handlers.open.messages.enable_zstd_preset import (
     check_enable_zstd_preset,
 )
+from lonelypsc.ws.handlers.open.messages.missed import check_missed
 from lonelypsc.ws.handlers.open.messages.protocol import MessageChecker
 from lonelypsc.ws.handlers.open.messages.receive_stream import check_receive_stream
 from lonelypsc.ws.state import StateOpen
@@ -46,6 +47,7 @@ _handlers = cast(
         BroadcasterToSubscriberStatefulMessageType.DISABLE_ZSTD_CUSTOM: check_disable_zstd_custom,
         BroadcasterToSubscriberStatefulMessageType.ENABLE_ZSTD_CUSTOM: check_enable_zstd_custom,
         BroadcasterToSubscriberStatefulMessageType.ENABLE_ZSTD_PRESET: check_enable_zstd_preset,
+        BroadcasterToSubscriberStatefulMessageType.MISSED: check_missed,
         BroadcasterToSubscriberStatefulMessageType.RECEIVE_STREAM: check_receive_stream,
     },
 )

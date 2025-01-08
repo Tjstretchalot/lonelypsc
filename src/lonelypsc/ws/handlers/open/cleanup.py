@@ -81,6 +81,8 @@ def _cancel_tasks(state: StateOpen) -> None:
             elif state.receiving.type == ReceivingState.AUTHORIZING:
                 state.receiving.body.close()
                 state.receiving.authorization_task.cancel()
+            elif state.receiving.type == ReceivingState.AUTHORIZING_MISSED:
+                state.receiving.authorization_task.cancel()
             elif state.receiving.type == ReceivingState.WAITING_COMPRESSOR:
                 state.receiving.compressed_body.close()
             else:

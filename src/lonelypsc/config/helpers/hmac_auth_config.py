@@ -297,6 +297,37 @@ class IncomingHmacAuth:
         )
         return await self._check_token(to_sign, hmac_token)
 
+    async def is_missed_allowed(
+        self,
+        /,
+        *,
+        recovery: str,
+        topic: bytes,
+        now: float,
+        authorization: Optional[str],
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        result = self._get_token(authorization, now)
+        if result[0] != "found":
+            return result[0]
+
+        timestamp, nonce, hmac_token = result[1]
+        encoded_recovery = recovery.encode("utf-8")
+        encoded_timestamp = timestamp.to_bytes(8, "big")
+        encoded_nonce = nonce.encode("utf-8")
+
+        to_sign = b"".join(
+            [
+                encoded_timestamp,
+                len(encoded_nonce).to_bytes(1, "big"),
+                encoded_nonce,
+                len(encoded_recovery).to_bytes(2, "big"),
+                encoded_recovery,
+                len(topic).to_bytes(2, "big"),
+                topic,
+            ]
+        )
+        return await self._check_token(to_sign, hmac_token)
+
 
 class OutgoingHmacAuth:
     """Signs requests such that they can be verified by the subscriber but an
@@ -326,10 +357,11 @@ class OutgoingHmacAuth:
         )
 
     async def setup_subscribe_exact_authorization(
-        self, /, *, url: str, exact: bytes, now: float
+        self, /, *, url: str, recovery: Optional[str], exact: bytes, now: float
     ) -> Optional[str]:
         nonce = self._make_nonce()
         encoded_url = url.encode("utf-8")
+        encoded_recovery = b"" if recovery is None else recovery.encode("utf-8")
         encoded_timestamp = int(now).to_bytes(8, "big")
         encoded_nonce = nonce.encode("utf-8")
 
@@ -340,6 +372,8 @@ class OutgoingHmacAuth:
                 encoded_nonce,
                 len(encoded_url).to_bytes(2, "big"),
                 encoded_url,
+                len(encoded_recovery).to_bytes(2, "big"),
+                encoded_recovery,
                 len(exact).to_bytes(2, "big"),
                 exact,
             ]
@@ -347,10 +381,11 @@ class OutgoingHmacAuth:
         return self._sign(to_sign, nonce, now)
 
     async def setup_subscribe_glob_authorization(
-        self, /, *, url: str, glob: str, now: float
+        self, /, *, url: str, recovery: Optional[str], glob: str, now: float
     ) -> Optional[str]:
         nonce = self._make_nonce()
         encoded_url = url.encode("utf-8")
+        encoded_recovery = b"" if recovery is None else recovery.encode("utf-8")
         encoded_glob = glob.encode("utf-8")
         encoded_timestamp = int(now).to_bytes(8, "big")
         encoded_nonce = nonce.encode("utf-8")
@@ -362,6 +397,8 @@ class OutgoingHmacAuth:
                 encoded_nonce,
                 len(encoded_url).to_bytes(2, "big"),
                 encoded_url,
+                len(encoded_recovery).to_bytes(2, "big"),
+                encoded_recovery,
                 len(encoded_glob).to_bytes(2, "big"),
                 encoded_glob,
             ]

@@ -8,6 +8,9 @@ from lonelypsc.ws.handlers.open.check_read import check_read_task
 from lonelypsc.ws.handlers.open.check_receiving_authorizing import (
     check_receiving_authorizing,
 )
+from lonelypsc.ws.handlers.open.check_receiving_authorizing_missed import (
+    check_receiving_authorizing_missed,
+)
 from lonelypsc.ws.handlers.open.check_receiving_decompressing import (
     check_receiving_decompressing,
 )
@@ -48,6 +51,8 @@ async def _core(state: StateOpen) -> State:
     if state.cancel_requested.is_set():
         raise PubSubCancelRequested()
 
+    if check_receiving_authorizing_missed(state) == CheckResult.RESTART:
+        return state
     if check_receiving_authorizing(state) == CheckResult.RESTART:
         return state
     if check_receiving_waiting_compressor(state) == CheckResult.RESTART:

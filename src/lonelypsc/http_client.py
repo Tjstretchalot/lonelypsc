@@ -27,7 +27,12 @@ from aiohttp.typedefs import LooseHeaders
 from fastapi import APIRouter, Header
 from fastapi.requests import Request
 from fastapi.responses import Response
-from lonelypsp.stateless.make_strong_etag import StrongEtag, make_strong_etag
+from lonelypsp.stateless.make_strong_etag import (
+    GlobAndRecovery,
+    StrongEtag,
+    TopicAndRecovery,
+    make_strong_etag,
+)
 from lonelypsp.util.cancel_and_check import cancel_and_check
 from starlette.background import BackgroundTask
 
@@ -300,6 +305,17 @@ class HttpPubSubClientConnector:
 
         return host_url + "/v1/receive" + host_fragment
 
+    @property
+    def _recovery_url(self) -> str:
+        host_url = self.config.host
+        host_fragment_starts_at = host_url.find("#")
+        host_fragment = ""
+        if host_fragment_starts_at != -1:
+            host_fragment = host_url[host_fragment_starts_at:]
+            host_url = host_url[:host_fragment_starts_at]
+
+        return host_url + "/v1/recover" + host_fragment
+
     def _raise_for_error(
         self, /, result: Union[Literal["ambiguous", "retry", "refused"], T]
     ) -> None:
@@ -313,10 +329,11 @@ class HttpPubSubClientConnector:
     async def subscribe_exact(self, /, *, topic: bytes) -> None:
         assert self._session is not None, "not set up"
         receive_url = self._receive_url
+        recovery_url = self._recovery_url
 
         auth_at = time.time()
         authorization = await self.config.setup_subscribe_exact_authorization(
-            url=receive_url, exact=topic, now=auth_at
+            url=receive_url, recovery=recovery_url, exact=topic, now=auth_at
         )
         headers: Dict[str, str] = {
             "Content-Type": "application/octet-stream",
@@ -325,12 +342,15 @@ class HttpPubSubClientConnector:
             headers["Authorization"] = authorization
 
         encoded_receive_url = receive_url.encode("utf-8")
+        encoded_recovery_url = recovery_url.encode("utf-8")
 
         body = io.BytesIO()
         body.write(len(encoded_receive_url).to_bytes(2, "big", signed=False))
         body.write(encoded_receive_url)
         body.write(len(topic).to_bytes(2, "big", signed=False))
         body.write(topic)
+        body.write(len(encoded_recovery_url).to_bytes(2, "big", signed=False))
+        body.write(encoded_recovery_url)
 
         result = await self._make_small_request(
             method="POST",
@@ -344,10 +364,11 @@ class HttpPubSubClientConnector:
     async def subscribe_glob(self, /, *, glob: str) -> None:
         assert self._session is not None, "not set up"
         receive_url = self._receive_url
+        recovery_url = self._recovery_url
 
         auth_at = time.time()
         authorization = await self.config.setup_subscribe_glob_authorization(
-            url=receive_url, glob=glob, now=auth_at
+            url=receive_url, recovery=recovery_url, glob=glob, now=auth_at
         )
         headers: Dict[str, str] = {
             "Content-Type": "application/octet-stream",
@@ -357,12 +378,15 @@ class HttpPubSubClientConnector:
 
         encoded_receive_url = receive_url.encode("utf-8")
         encoded_glob = glob.encode("utf-8")
+        encoded_recovery_url = recovery_url.encode("utf-8")
 
         body = io.BytesIO()
         body.write(len(encoded_receive_url).to_bytes(2, "big", signed=False))
         body.write(encoded_receive_url)
         body.write(len(encoded_glob).to_bytes(2, "big", signed=False))
         body.write(encoded_glob)
+        body.write(len(encoded_recovery_url).to_bytes(2, "big", signed=False))
+        body.write(encoded_recovery_url)
 
         result = await self._make_small_request(
             method="POST",
@@ -379,7 +403,7 @@ class HttpPubSubClientConnector:
 
         auth_at = time.time()
         authorization = await self.config.setup_subscribe_exact_authorization(
-            url=receive_url, exact=topic, now=auth_at
+            url=receive_url, recovery=None, exact=topic, now=auth_at
         )
         headers: Dict[str, str] = {
             "Content-Type": "application/octet-stream",
@@ -410,7 +434,7 @@ class HttpPubSubClientConnector:
 
         auth_at = time.time()
         authorization = await self.config.setup_subscribe_glob_authorization(
-            url=receive_url, glob=glob, now=auth_at
+            url=receive_url, recovery=None, glob=glob, now=auth_at
         )
         headers: Dict[str, str] = {
             "Content-Type": "application/octet-stream",
@@ -482,12 +506,24 @@ class HttpPubSubClientConnector:
         globs: List[str],
     ) -> None:
         assert self._session is not None, "not set up"
+        recovery_url = self._recovery_url
+        encoded_recovery_url = recovery_url.encode("utf-8")
+
+        rec_and_length = bytearray(2 + len(encoded_recovery_url))
+        rec_and_length[:2] = len(encoded_recovery_url).to_bytes(2, "big", signed=False)
+        rec_and_length[2:] = encoded_recovery_url
+
         exact = sorted(exact)
         globs = sorted(globs)
 
         receive_url = self._receive_url
 
-        strong_etag = make_strong_etag(receive_url, exact, globs, recheck_sort=False)
+        strong_etag = make_strong_etag(
+            receive_url,
+            [TopicAndRecovery(t, recovery_url) for t in exact],
+            [GlobAndRecovery(g, recovery_url) for g in globs],
+            recheck_sort=False,
+        )
 
         auth_at = time.time()
         authorization = await self.config.setup_set_subscriptions_authorization(
@@ -509,12 +545,14 @@ class HttpPubSubClientConnector:
         for topic in exact:
             body.write(len(topic).to_bytes(2, "big", signed=False))
             body.write(topic)
+            body.write(rec_and_length)
 
         body.write(len(globs).to_bytes(4, "big", signed=False))
         for glob in globs:
             encoded_glob = glob.encode("utf-8")
             body.write(len(encoded_glob).to_bytes(2, "big", signed=False))
             body.write(encoded_glob)
+            body.write(rec_and_length)
 
         result = await self._make_small_request(
             method="POST",
@@ -613,6 +651,7 @@ class HttpPubSubClientReceiver:
 
         router = APIRouter()
         router.add_api_route("/v1/receive", self._receive, methods=["POST"])
+        router.add_api_route("/v1/recover", self._recover, methods=["POST"])
         self.bind_task = asyncio.create_task(bind_config["callback"](router))
 
         async with self._status_handlers_lock:
@@ -866,6 +905,78 @@ class HttpPubSubClientReceiver:
                 BackgroundTask(
                     _raise_excs,
                     "failed to inform handlers about received message",
+                    background_exceptions,
+                )
+                if background_exceptions
+                else None
+            ),
+        )
+
+    async def _recover(
+        self,
+        request: Request,
+        authorization: Annotated[Optional[str], Header()] = None,
+        x_topic: Annotated[Optional[str], Header()] = None,
+    ) -> Response:
+        if x_topic is None:
+            return Response(
+                status_code=400,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                content=b'{"unsubscribe": true, "reason": "missing x-topic header"}',
+            )
+
+        try:
+            topic = base64.b64decode(x_topic + "==")
+        except BaseException:
+            return Response(
+                status_code=400,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                content=b'{"unsubscribe": true, "reason": "invalid x-topic header"}',
+            )
+
+        auth_result = await self.config.is_missed_allowed(
+            recovery=str(request.url),
+            topic=topic,
+            now=time.time(),
+            authorization=authorization,
+        )
+        if auth_result == "unavailable":
+            return Response(status_code=503)
+        if auth_result != "ok":
+            return Response(
+                status_code=403,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                content=b'{"unsubscribe": true, "reason": '
+                + json.dumps(auth_result).encode("utf-8")
+                + b"}",
+            )
+
+        background_exceptions: List[BaseException] = []
+        async with self._status_handlers_lock:
+            if self.connection_status == PubSubClientConnectionStatus.ABANDONED:
+                return Response(status_code=503)
+
+            if self.connection_status == PubSubClientConnectionStatus.OK:
+                self.connection_status = PubSubClientConnectionStatus.LOST
+                for _, status_handler in self.status_handlers:
+                    try:
+                        await status_handler.on_connection_lost()
+                    except BaseException as e:
+                        background_exceptions.append(e)
+
+            self.connection_status = PubSubClientConnectionStatus.OK
+            for _, status_handler in self.status_handlers:
+                try:
+                    await status_handler.on_connection_established()
+                except BaseException as e:
+                    background_exceptions.append(e)
+
+        return Response(
+            status_code=200,
+            background=(
+                BackgroundTask(
+                    _raise_excs,
+                    "failed to inform status handlers about recovery",
                     background_exceptions,
                 )
                 if background_exceptions

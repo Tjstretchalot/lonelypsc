@@ -26,6 +26,17 @@ class IncomingNoneAuth:
     ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
         return "ok"
 
+    async def is_missed_allowed(
+        self,
+        /,
+        *,
+        recovery: str,
+        topic: bytes,
+        now: float,
+        authorization: Optional[str],
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        return "ok"
+
 
 class OutgoingNoneAuth:
     """Implements the OutgoingAuthConfig protocol with no-ops. Generally, use HMAC instead
@@ -37,12 +48,12 @@ class OutgoingNoneAuth:
     async def teardown_outgoing_auth(self) -> None: ...
 
     async def setup_subscribe_exact_authorization(
-        self, /, *, url: str, exact: bytes, now: float
+        self, /, *, url: str, recovery: Optional[str], exact: bytes, now: float
     ) -> Optional[str]:
         return None
 
     async def setup_subscribe_glob_authorization(
-        self, /, *, url: str, glob: str, now: float
+        self, /, *, url: str, recovery: Optional[str], glob: str, now: float
     ) -> Optional[str]:
         return None
 
