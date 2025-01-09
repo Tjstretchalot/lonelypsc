@@ -1,3 +1,4 @@
+import asyncio
 import uvicorn
 from fastapi import APIRouter, FastAPI
 
@@ -27,7 +28,13 @@ class BindWithUvicornCallback:
             # reduce default logging since this isn't the main deal for the process
         )
         uv_server = uvicorn.Server(uv_config)
-        await uv_server.serve()
+        serve_task = asyncio.create_task(uv_server.serve())
+
+        try:
+            await asyncio.shield(serve_task)
+        finally:
+            uv_server.should_exit = True
+            await serve_task
 
 
 async def handle_bind_with_uvicorn(
