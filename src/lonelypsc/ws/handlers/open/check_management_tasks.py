@@ -108,7 +108,7 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
     url = make_for_send_websocket_url_and_change_counter(state)
 
     if task.type == ManagementTaskType.SUBSCRIBE_EXACT:
-        authorization = await state.config.setup_subscribe_exact_authorization(
+        authorization = await state.config.authorize_subscribe_exact(
             url=url,
             recovery=None,
             exact=task.topic,
@@ -127,7 +127,7 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
         return
 
     if task.type == ManagementTaskType.SUBSCRIBE_GLOB:
-        authorization = await state.config.setup_subscribe_glob_authorization(
+        authorization = await state.config.authorize_subscribe_glob(
             url=url, recovery=None, glob=task.glob, now=time.time()
         )
         await state.websocket.send_bytes(
@@ -143,7 +143,7 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
         return
 
     if task.type == ManagementTaskType.UNSUBSCRIBE_EXACT:
-        authorization = await state.config.setup_subscribe_exact_authorization(
+        authorization = await state.config.authorize_subscribe_exact(
             url=url, recovery=None, exact=task.topic, now=time.time()
         )
         await state.websocket.send_bytes(
@@ -159,7 +159,7 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
         return
 
     if task.type == ManagementTaskType.UNSUBSCRIBE_GLOB:
-        authorization = await state.config.setup_subscribe_glob_authorization(
+        authorization = await state.config.authorize_subscribe_glob(
             url=url, recovery=None, glob=task.glob, now=time.time()
         )
         await state.websocket.send_bytes(

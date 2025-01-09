@@ -332,7 +332,7 @@ class HttpPubSubClientConnector:
         recovery_url = self._recovery_url
 
         auth_at = time.time()
-        authorization = await self.config.setup_subscribe_exact_authorization(
+        authorization = await self.config.authorize_subscribe_exact(
             url=receive_url, recovery=recovery_url, exact=topic, now=auth_at
         )
         headers: Dict[str, str] = {
@@ -367,7 +367,7 @@ class HttpPubSubClientConnector:
         recovery_url = self._recovery_url
 
         auth_at = time.time()
-        authorization = await self.config.setup_subscribe_glob_authorization(
+        authorization = await self.config.authorize_subscribe_glob(
             url=receive_url, recovery=recovery_url, glob=glob, now=auth_at
         )
         headers: Dict[str, str] = {
@@ -402,7 +402,7 @@ class HttpPubSubClientConnector:
         receive_url = self._receive_url
 
         auth_at = time.time()
-        authorization = await self.config.setup_subscribe_exact_authorization(
+        authorization = await self.config.authorize_subscribe_exact(
             url=receive_url, recovery=None, exact=topic, now=auth_at
         )
         headers: Dict[str, str] = {
@@ -433,7 +433,7 @@ class HttpPubSubClientConnector:
         receive_url = self._receive_url
 
         auth_at = time.time()
-        authorization = await self.config.setup_subscribe_glob_authorization(
+        authorization = await self.config.authorize_subscribe_glob(
             url=receive_url, recovery=None, glob=glob, now=auth_at
         )
         headers: Dict[str, str] = {
@@ -468,7 +468,7 @@ class HttpPubSubClientConnector:
         receive_url = self._receive_url
 
         auth_at = time.time()
-        authorization = await self.config.setup_check_subscriptions_authorization(
+        authorization = await self.config.authorize_check_subscriptions(
             url=receive_url, now=auth_at
         )
         headers: Dict[str, str] = {
@@ -526,7 +526,7 @@ class HttpPubSubClientConnector:
         )
 
         auth_at = time.time()
-        authorization = await self.config.setup_set_subscriptions_authorization(
+        authorization = await self.config.authorize_set_subscriptions(
             url=receive_url, strong_etag=strong_etag, now=auth_at
         )
         headers: Dict[str, str] = {
@@ -575,7 +575,7 @@ class HttpPubSubClientConnector:
         assert self._session is not None, "not set up"
 
         auth_at = time.time()
-        authorization = await self.config.setup_notify_authorization(
+        authorization = await self.config.authorize_notify(
             topic=topic, message_sha512=message_sha512, now=auth_at
         )
 
@@ -1047,18 +1047,18 @@ def HttpPubSubClient(config: HttpPubSubConfig) -> PubSubClient:
     """
 
     async def setup() -> None:
-        await config.setup_incoming_auth()
+        await config.setup_to_subscriber_auth()
         try:
-            await config.setup_outgoing_auth()
+            await config.setup_to_broadcaster_auth()
         except BaseException:
-            await config.teardown_incoming_auth()
+            await config.teardown_to_subscriber_auth()
             raise
 
     async def teardown() -> None:
         try:
-            await config.teardown_outgoing_auth()
+            await config.teardown_to_broadcaster_auth()
         finally:
-            await config.teardown_incoming_auth()
+            await config.teardown_to_subscriber_auth()
 
     return PubSubClient(
         HttpPubSubClientConnector(config),

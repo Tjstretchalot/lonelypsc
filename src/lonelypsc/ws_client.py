@@ -917,18 +917,18 @@ def WebsocketPubSubClient(config: WebsocketPubSubConfig) -> PubSubClient:
     """
 
     async def setup() -> None:
-        await config.setup_incoming_auth()
+        await config.setup_to_subscriber_auth()
         try:
-            await config.setup_outgoing_auth()
+            await config.setup_to_broadcaster_auth()
         except BaseException:
-            await config.teardown_incoming_auth()
+            await config.teardown_to_subscriber_auth()
             raise
 
     async def teardown() -> None:
         try:
-            await config.teardown_outgoing_auth()
+            await config.teardown_to_broadcaster_auth()
         finally:
-            await config.teardown_incoming_auth()
+            await config.teardown_to_subscriber_auth()
 
     connector_receiver = WSPubSubConnectorReceiver(config)
 

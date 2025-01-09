@@ -117,7 +117,7 @@ async def send_internal_small_message_uncompressed(
 
     WARN: does not inform the message callback
     """
-    authorization = await state.config.setup_notify_authorization(
+    authorization = await state.config.authorize_notify(
         topic=message.topic, message_sha512=message.sha512, now=time.time()
     )
 
@@ -189,7 +189,7 @@ async def send_internal_large_message_uncompressed(
     WARN: does not inform the message callback
     """
     if authorization is None:
-        authorization = await state.config.setup_notify_authorization(
+        authorization = await state.config.authorize_notify(
             topic=message.topic, message_sha512=message.sha512, now=time.time()
         )
 
@@ -250,7 +250,7 @@ async def send_internal_large_message_compressed(
     WARN: does not inform the message callback
     """
     spool_size = state.config.max_websocket_message_size or (2**64 - 1)
-    authorization = await state.config.setup_notify_authorization(
+    authorization = await state.config.authorize_notify(
         topic=message.topic, message_sha512=message.sha512, now=time.time()
     )
 
@@ -343,12 +343,7 @@ async def send_internal_small_message_compressed_with_compressed_data(
     compressed_sha512 = hashlib.sha512(compressed_data).digest()
 
     identifier = secrets.token_bytes(4)
-    authorization = await state.config.setup_notify_authorization(
-        topic=message.topic, message_sha512=message.sha512, now=time.time()
-    )
-
-    identifier = secrets.token_bytes(4)
-    authorization = await state.config.setup_notify_authorization(
+    authorization = await state.config.authorize_notify(
         topic=message.topic, message_sha512=message.sha512, now=time.time()
     )
 
@@ -478,7 +473,7 @@ async def send_notify_stream_given_first_headers(
             return
 
         part_id += 1
-        authorization = await state.config.setup_notify_authorization(
+        authorization = await state.config.authorize_notify(
             topic=topic, message_sha512=sha512, now=time.time()
         )
         headers = serialize_s2b_notify_stream(

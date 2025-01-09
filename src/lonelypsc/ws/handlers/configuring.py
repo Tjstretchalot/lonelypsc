@@ -129,7 +129,7 @@ async def _check_read_task(state: StateConfiguring) -> CheckStateChangerResult:
 
     parsed_message = B2S_ConfirmConfigureParser.parse(prefix.flags, prefix.type, stream)
 
-    auth_result = await state.config.is_websocket_confirm_configure_allowed(
+    auth_result = await state.config.is_stateful_confirm_configure_allowed(
         message=parsed_message, now=time.time()
     )
     if auth_result != "ok":

@@ -161,7 +161,7 @@ async def _check_websocket(state: StateConnecting) -> CheckStateChangerResult:
     enable_zstd = state.config.allow_compression
     enable_training = state.config.allow_training_compression
     initial_dict = state.config.initial_compression_dict_id or 0
-    authorization = await state.config.setup_websocket_configure(
+    authorization = await state.config.authorize_stateful_configure(
         subscriber_nonce=subscriber_nonce,
         enable_zstd=enable_zstd,
         enable_training=enable_training,

@@ -10,10 +10,12 @@ from typing import (
 )
 
 from fastapi import APIRouter
+from lonelypsp.auth.config import AuthConfig
+from lonelypsp.auth.set_subscriptions_info import SetSubscriptionsInfo
+from lonelypsp.stateful.messages.configure import S2B_Configure
 from lonelypsp.stateful.messages.confirm_configure import B2S_ConfirmConfigure
 from lonelypsp.stateless.make_strong_etag import StrongEtag
 
-from lonelypsc.config.auth_config import AuthConfig
 from lonelypsc.config.config import PubSubBroadcasterConfig
 
 
@@ -246,7 +248,7 @@ class HttpPubSubConfigFromParts:
         self.bind_config = bind_config
         self.connect_config = connect_config
         self.generic_config = generic_config
-        self.auth_config = auth_config
+        self.auth = auth_config
 
     @property
     def bind(self) -> Union[HttpPubSubBindUvicornConfig, HttpPubSubBindManualConfig]:
@@ -288,6 +290,152 @@ class HttpPubSubConfigFromParts:
     def outgoing_retry_ambiguous(self) -> bool:
         return self.generic_config.outgoing_retry_ambiguous
 
+    async def setup_to_broadcaster_auth(self) -> None:
+        await self.auth.setup_to_broadcaster_auth()
+
+    async def teardown_to_broadcaster_auth(self) -> None:
+        await self.auth.teardown_to_broadcaster_auth()
+
+    async def setup_to_subscriber_auth(self) -> None:
+        await self.auth.setup_to_subscriber_auth()
+
+    async def teardown_to_subscriber_auth(self) -> None:
+        await self.auth.teardown_to_subscriber_auth()
+
+    async def authorize_subscribe_exact(
+        self, /, *, url: str, recovery: Optional[str], exact: bytes, now: float
+    ) -> Optional[str]:
+        return await self.auth.authorize_subscribe_exact(
+            url=url, recovery=recovery, exact=exact, now=now
+        )
+
+    async def is_subscribe_exact_allowed(
+        self,
+        /,
+        *,
+        url: str,
+        recovery: Optional[str],
+        exact: bytes,
+        now: float,
+        authorization: Optional[str],
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        return await self.auth.is_subscribe_exact_allowed(
+            url=url,
+            recovery=recovery,
+            exact=exact,
+            now=now,
+            authorization=authorization,
+        )
+
+    async def authorize_subscribe_glob(
+        self, /, *, url: str, recovery: Optional[str], glob: str, now: float
+    ) -> Optional[str]:
+        return await self.auth.authorize_subscribe_glob(
+            url=url, recovery=recovery, glob=glob, now=now
+        )
+
+    async def is_subscribe_glob_allowed(
+        self,
+        /,
+        *,
+        url: str,
+        recovery: Optional[str],
+        glob: str,
+        now: float,
+        authorization: Optional[str],
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        return await self.auth.is_subscribe_glob_allowed(
+            url=url, recovery=recovery, glob=glob, now=now, authorization=authorization
+        )
+
+    async def authorize_notify(
+        self, /, *, topic: bytes, message_sha512: bytes, now: float
+    ) -> Optional[str]:
+        return await self.auth.authorize_notify(
+            topic=topic, message_sha512=message_sha512, now=now
+        )
+
+    async def is_notify_allowed(
+        self,
+        /,
+        *,
+        topic: bytes,
+        message_sha512: bytes,
+        now: float,
+        authorization: Optional[str],
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        return await self.auth.is_notify_allowed(
+            topic=topic,
+            message_sha512=message_sha512,
+            now=now,
+            authorization=authorization,
+        )
+
+    async def authorize_stateful_configure(
+        self,
+        /,
+        *,
+        subscriber_nonce: bytes,
+        enable_zstd: bool,
+        enable_training: bool,
+        initial_dict: int,
+    ) -> Optional[str]:
+        return await self.auth.authorize_stateful_configure(
+            subscriber_nonce=subscriber_nonce,
+            enable_zstd=enable_zstd,
+            enable_training=enable_training,
+            initial_dict=initial_dict,
+        )
+
+    async def is_stateful_configure_allowed(
+        self, /, *, message: S2B_Configure, now: float
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        return await self.auth.is_stateful_configure_allowed(message=message, now=now)
+
+    async def authorize_check_subscriptions(
+        self, /, *, url: str, now: float
+    ) -> Optional[str]:
+        return await self.auth.authorize_check_subscriptions(url=url, now=now)
+
+    async def is_check_subscriptions_allowed(
+        self, /, *, url: str, now: float, authorization: Optional[str]
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        return await self.auth.is_check_subscriptions_allowed(
+            url=url, now=now, authorization=authorization
+        )
+
+    async def authorize_set_subscriptions(
+        self, /, *, url: str, strong_etag: StrongEtag, now: float
+    ) -> Optional[str]:
+        return await self.auth.authorize_set_subscriptions(
+            url=url, strong_etag=strong_etag, now=now
+        )
+
+    async def is_set_subscriptions_allowed(
+        self,
+        /,
+        *,
+        url: str,
+        strong_etag: StrongEtag,
+        subscriptions: SetSubscriptionsInfo,
+        now: float,
+        authorization: Optional[str],
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        return await self.auth.is_set_subscriptions_allowed(
+            url=url,
+            strong_etag=strong_etag,
+            subscriptions=subscriptions,
+            now=now,
+            authorization=authorization,
+        )
+
+    async def authorize_receive(
+        self, /, *, url: str, topic: bytes, message_sha512: bytes, now: float
+    ) -> Optional[str]:
+        return await self.auth.authorize_receive(
+            url=url, topic=topic, message_sha512=message_sha512, now=now
+        )
+
     async def is_receive_allowed(
         self,
         /,
@@ -298,13 +446,18 @@ class HttpPubSubConfigFromParts:
         now: float,
         authorization: Optional[str],
     ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
-        return await self.auth_config.is_receive_allowed(
+        return await self.auth.is_receive_allowed(
             url=url,
             topic=topic,
             message_sha512=message_sha512,
             now=now,
             authorization=authorization,
         )
+
+    async def authorize_missed(
+        self, /, *, recovery: str, topic: bytes, now: float
+    ) -> Optional[str]:
+        return await self.auth.authorize_missed(recovery=recovery, topic=topic, now=now)
 
     async def is_missed_allowed(
         self,
@@ -315,89 +468,22 @@ class HttpPubSubConfigFromParts:
         now: float,
         authorization: Optional[str],
     ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
-        return await self.auth_config.is_missed_allowed(
+        return await self.auth.is_missed_allowed(
             recovery=recovery, topic=topic, now=now, authorization=authorization
         )
 
-    async def is_websocket_confirm_configure_allowed(
+    async def authorize_stateful_confirm_configure(
+        self, /, *, broadcaster_nonce: bytes, now: float
+    ) -> Optional[str]:
+        return await self.auth.authorize_stateful_confirm_configure(
+            broadcaster_nonce=broadcaster_nonce, now=now
+        )
+
+    async def is_stateful_confirm_configure_allowed(
         self, /, *, message: B2S_ConfirmConfigure, now: float
     ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
-        return await self.auth_config.is_websocket_confirm_configure_allowed(
+        return await self.auth.is_stateful_confirm_configure_allowed(
             message=message, now=now
-        )
-
-    async def setup_incoming_auth(self) -> None:
-        await self.auth_config.setup_incoming_auth()
-
-    async def teardown_incoming_auth(self) -> None:
-        await self.auth_config.teardown_incoming_auth()
-
-    async def setup_outgoing_auth(self) -> None:
-        await self.auth_config.setup_outgoing_auth()
-
-    async def teardown_outgoing_auth(self) -> None:
-        await self.auth_config.teardown_outgoing_auth()
-
-    async def setup_subscribe_exact_authorization(
-        self, /, *, url: str, recovery: Optional[str], exact: bytes, now: float
-    ) -> Optional[str]:
-        return await self.auth_config.setup_subscribe_exact_authorization(
-            url=url,
-            recovery=recovery,
-            exact=exact,
-            now=now,
-        )
-
-    async def setup_subscribe_glob_authorization(
-        self, /, *, url: str, recovery: Optional[str], glob: str, now: float
-    ) -> Optional[str]:
-        return await self.auth_config.setup_subscribe_glob_authorization(
-            url=url,
-            recovery=recovery,
-            glob=glob,
-            now=now,
-        )
-
-    async def setup_notify_authorization(
-        self, /, *, topic: bytes, message_sha512: bytes, now: float
-    ) -> Optional[str]:
-        return await self.auth_config.setup_notify_authorization(
-            topic=topic,
-            message_sha512=message_sha512,
-            now=now,
-        )
-
-    async def setup_check_subscriptions_authorization(
-        self, /, *, url: str, now: float
-    ) -> Optional[str]:
-        return await self.auth_config.setup_check_subscriptions_authorization(
-            url=url,
-            now=now,
-        )
-
-    async def setup_set_subscriptions_authorization(
-        self, /, *, url: str, strong_etag: StrongEtag, now: float
-    ) -> Optional[str]:
-        return await self.auth_config.setup_set_subscriptions_authorization(
-            url=url,
-            strong_etag=strong_etag,
-            now=now,
-        )
-
-    async def setup_websocket_configure(
-        self,
-        /,
-        *,
-        subscriber_nonce: bytes,
-        enable_zstd: bool,
-        enable_training: bool,
-        initial_dict: int,
-    ) -> Optional[str]:
-        return await self.auth_config.setup_websocket_configure(
-            subscriber_nonce=subscriber_nonce,
-            enable_zstd=enable_zstd,
-            enable_training=enable_training,
-            initial_dict=initial_dict,
         )
 
 
