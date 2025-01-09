@@ -1,7 +1,8 @@
 [project]
 name = "lonelypsc"
-version = "0.0.1"
+version = "0.0.2"
 description = "PubSub over HTTP (subscriber side)"
+readme = "README.md"
 authors = [
     { name = "Timothy Moore", email = "mtimothy984@gmail.com" }
 ]
