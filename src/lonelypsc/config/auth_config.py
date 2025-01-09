@@ -1,5 +1,6 @@
 from typing import TYPE_CHECKING, Literal, Optional, Protocol, Type
 
+from lonelypsp.stateful.messages.confirm_configure import B2S_ConfirmConfigure
 from lonelypsp.stateless.make_strong_etag import StrongEtag
 
 
@@ -63,6 +64,24 @@ class IncomingAuthConfig(Protocol):
             topic (bytes): the topic the message was on
             now (float): the current time in seconds since the epoch, as if from `time.time()`
             authorization (str, None): the authorization header they provided
+
+        Returns:
+            `ok`: if the message is allowed
+            `unauthorized`: if the authorization header is required but not provided
+            `forbidden`: if the authorization header is provided but invalid
+            `unavailable`: if a service is required to check this isn't available
+        """
+
+    async def is_websocket_confirm_configure_allowed(
+        self, /, *, message: B2S_ConfirmConfigure, now: float
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        """Determines if the subscriber should continue with a websocket connection
+        with a broadcaster who approved our configure message and responded back with
+        the given confirm configure message.
+
+        Args:
+            message (B2S_ConfirmConfigure): the confirm configure message from the broadcaster
+            now (float): the current time in seconds since the epoch, as if from `time.time()`
 
         Returns:
             `ok`: if the message is allowed
@@ -171,6 +190,29 @@ class OutgoingAuthConfig(Protocol):
             str, None: the authorization header to use, if any
         """
 
+    async def setup_websocket_configure(
+        self,
+        /,
+        *,
+        subscriber_nonce: bytes,
+        enable_zstd: bool,
+        enable_training: bool,
+        initial_dict: int,
+    ) -> Optional[str]:
+        """Provides the authorization header that the subscriber should use to
+        configure the websocket connection with the broadcaster
+
+        Args:
+            subscriber_nonce (bytes): the 32 random bytes the subscriber is
+                contributing toward the connection nonce
+            enable_zstd (bool): whether to enable zstd compression
+            enable_training (bool): whether to enable training mode
+            initial_dict (int): the initial dictionary to use
+
+        Returns:
+            str, None: the authorization header to use, if any
+        """
+
 
 class AuthConfig(IncomingAuthConfig, OutgoingAuthConfig, Protocol): ...
 
@@ -230,6 +272,14 @@ class AuthConfigFromParts:
             authorization=authorization,
         )
 
+    async def is_websocket_confirm_configure_allowed(
+        self, /, *, message: B2S_ConfirmConfigure, now: float
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        return await self.incoming.is_websocket_confirm_configure_allowed(
+            message=message,
+            now=now,
+        )
+
     async def setup_subscribe_exact_authorization(
         self, /, *, url: str, recovery: Optional[str], exact: bytes, now: float
     ) -> Optional[str]:
@@ -274,6 +324,22 @@ class AuthConfigFromParts:
             url=url,
             strong_etag=strong_etag,
             now=now,
+        )
+
+    async def setup_websocket_configure(
+        self,
+        /,
+        *,
+        subscriber_nonce: bytes,
+        enable_zstd: bool,
+        enable_training: bool,
+        initial_dict: int,
+    ) -> Optional[str]:
+        return await self.outgoing.setup_websocket_configure(
+            subscriber_nonce=subscriber_nonce,
+            enable_zstd=enable_zstd,
+            enable_training=enable_training,
+            initial_dict=initial_dict,
         )
 
 

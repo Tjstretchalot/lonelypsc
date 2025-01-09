@@ -4,8 +4,8 @@ from lonelypsc.ws.internal_callbacks import sweep_internal_message
 from lonelypsc.ws.state import SendingState, StateOpen
 
 
-def check_send_task(state: StateOpen) -> CheckResult:
-    """Checks if the send task is done, and if so, verifies it was successful
+def check_sending(state: StateOpen) -> CheckResult:
+    """Checks if sending is done, and if so, verifies it was successful
     then sets it to None, otherwise raises an exception
     """
     if state.sending is None or not state.sending.task.done():

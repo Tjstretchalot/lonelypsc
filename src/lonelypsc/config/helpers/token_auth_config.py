@@ -1,6 +1,7 @@
 import hmac
 from typing import TYPE_CHECKING, Literal, Optional, Type
 
+from lonelypsp.stateful.messages.confirm_configure import B2S_ConfirmConfigure
 from lonelypsp.stateless.make_strong_etag import StrongEtag
 
 from lonelypsc.config.auth_config import IncomingAuthConfig, OutgoingAuthConfig
@@ -53,6 +54,11 @@ class IncomingTokenAuth:
     ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
         return self._check(authorization)
 
+    async def is_websocket_confirm_configure_allowed(
+        self, /, *, message: B2S_ConfirmConfigure, now: float
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        return self._check(message.authorization)
+
 
 class OutgoingTokenAuth:
     """Implements the OutgoingAuthConfig protocol by setting the authorization header
@@ -89,6 +95,17 @@ class OutgoingTokenAuth:
 
     async def setup_set_subscriptions_authorization(
         self, /, *, url: str, strong_etag: StrongEtag, now: float
+    ) -> Optional[str]:
+        return self.authorization
+
+    async def setup_websocket_configure(
+        self,
+        /,
+        *,
+        subscriber_nonce: bytes,
+        enable_zstd: bool,
+        enable_training: bool,
+        initial_dict: int,
     ) -> Optional[str]:
         return self.authorization
 

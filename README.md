@@ -1,10 +1,11 @@
 # lonelypsc
 
-## PROJECT STAGE - PLANNING
+## PROJECT STAGE - PRE-ALPHA
 
-This project is in the development stage 1 - planning. This means that most things
-you see won't work yet and are in the process of being finalized. Star/watch this
-repository to be notified when it reaches the next stage!
+This project is in the development stage 2 - pre-alpha. This means that
+the project is still in the early stages of development, and is not yet
+stable. The current primary focus of the library is building the test
+suite in `lonelypst`
 
 ## Overview
 
@@ -18,7 +19,7 @@ the terminology, see the server repository.
 python -m venv venv
 source venv/bin/activate
 python -m pip install -U pip
-pip install lonelypsc
+pip install lonelypsc[standard]
 pip freeze > requirements.txt
 ```
 
@@ -55,7 +56,7 @@ def _build_config() -> HttpPubSubConfig:
     # authorization. no matter what, the broadcasters and subscribers will need
     # to agree.
     incoming_auth_config, outgoing_auth_config = get_auth_config_from_file(
-        'subscriber-secrets.json'
+        "subscriber-secrets.json"
     )
 
     return make_http_pub_sub_config(
@@ -68,14 +69,13 @@ def _build_config() -> HttpPubSubConfig:
         # and you are hosting multiple processes on this machine, and this has the
         # unique process id of 1, then you might use:
         # host="http://192.0.2.0:3002/pubsub#1"
-        host='http://192.0.2.0:3002',
+        host="http://127.0.0.1:3002",
         # the broadcasters that we will try to connect to. note that broadcasters
         # are generally stateless, so there is no data loss if one goes down. hence,
         # a high-availability setup typically needs only 2 broadcasters to tolerate
         # 1 AZ failure.
         broadcasters=[
-            {"host": "http://192.0.2.1:3003"},
-            {"host": "http://192.0.2.2:3003"}
+            {"host": "http://127.0.0.1:3003"},
         ],
         # how many attempts per broadcaster before giving up; if this is 2,
         # for example, we will try every broadcaster once, then we will try
@@ -99,7 +99,7 @@ def _build_config() -> HttpPubSubConfig:
             # determines how we validate the authorization header when receiving from the broadcaster
             incoming_auth_config,
             # determines how we set the authorization header when reaching out to the broadcaster
-            outgoing_auth_config
+            outgoing_auth_config,
         ),
     )
 
@@ -210,18 +210,3 @@ make_http_pub_sub_config(
     # ... other args omitted for brevity ...
 )
 ```
-
-## TODO
-
-Things not designed yet but need to be handled:
-
-- should be a way to request the server unsubscribe us from everything when initializing
-  a client; requires either a listing endpoint from the server or a dedicated endpoint for
-  this purpose. this will make us naturally recover from errors much nicer
-
-- there should be an authorization component to both CONFIGURE and CONFIRM_CONFIGURE on the
-  websocket protocol, which will allow users of the library to decide to skip the other
-  authorization handshakes within the websocket if there is another way to confirm the packets
-  are from the same sender (i.e., TLS), plus making certain DoS attacks more difficult
-
-- make sure update copy send_task -> sending

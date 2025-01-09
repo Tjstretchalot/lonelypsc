@@ -21,7 +21,7 @@ from lonelypsc.ws.handlers.open.check_resending_notifications import (
     check_resending_notifications,
 )
 from lonelypsc.ws.handlers.open.check_retry_tentative import check_retry_tentative
-from lonelypsc.ws.handlers.open.check_send import check_send_task
+from lonelypsc.ws.handlers.open.check_send import check_sending
 from lonelypsc.ws.handlers.open.check_sent_notifications import check_sent_notifications
 from lonelypsc.ws.handlers.open.check_unsent_acks import check_unsent_acks
 from lonelypsc.ws.handlers.open.check_unsent_notifications import (
@@ -61,7 +61,7 @@ async def _core(state: StateOpen) -> State:
         return state
     if check_read_task(state) == CheckResult.RESTART:
         return state
-    if check_send_task(state) == CheckResult.RESTART:
+    if check_sending(state) == CheckResult.RESTART:
         return state
     if check_unsent_acks(state) == CheckResult.RESTART:
         return state

@@ -7,6 +7,7 @@ import sqlite3
 import time
 from typing import TYPE_CHECKING, Literal, Optional, Protocol, Tuple, Type, Union, cast
 
+from lonelypsp.stateful.messages.confirm_configure import B2S_ConfirmConfigure
 from lonelypsp.stateless.make_strong_etag import StrongEtag
 
 from lonelypsc.config.auth_config import IncomingAuthConfig, OutgoingAuthConfig
@@ -328,6 +329,28 @@ class IncomingHmacAuth:
         )
         return await self._check_token(to_sign, hmac_token)
 
+    async def is_websocket_confirm_configure_allowed(
+        self, /, *, message: B2S_ConfirmConfigure, now: float
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        result = self._get_token(message.authorization, now)
+        if result[0] != "found":
+            return result[0]
+
+        timestamp, nonce, hmac_token = result[1]
+        encoded_timestamp = timestamp.to_bytes(8, "big")
+        encoded_nonce = nonce.encode("utf-8")
+
+        to_sign = b"".join(
+            [
+                encoded_timestamp,
+                len(encoded_nonce).to_bytes(1, "big"),
+                encoded_nonce,
+                len(message.broadcaster_nonce).to_bytes(1, "big"),
+                message.broadcaster_nonce,
+            ]
+        )
+        return await self._check_token(to_sign, hmac_token)
+
 
 class OutgoingHmacAuth:
     """Signs requests such that they can be verified by the subscriber but an
@@ -464,6 +487,33 @@ class OutgoingHmacAuth:
             ]
         )
         return self._sign(to_sign, nonce, now)
+
+    async def setup_websocket_configure(
+        self,
+        /,
+        *,
+        subscriber_nonce: bytes,
+        enable_zstd: bool,
+        enable_training: bool,
+        initial_dict: int,
+    ) -> Optional[str]:
+        nonce = self._make_nonce()
+        encoded_nonce = nonce.encode("utf-8")
+        encoded_timestamp = int(time.time()).to_bytes(8, "big")
+
+        to_sign = b"".join(
+            [
+                encoded_timestamp,
+                len(encoded_nonce).to_bytes(1, "big"),
+                encoded_nonce,
+                len(subscriber_nonce).to_bytes(1, "big"),
+                subscriber_nonce,
+                b"\1" if enable_zstd else b"\0",
+                b"\1" if enable_training else b"\0",
+                initial_dict.to_bytes(2, "big"),
+            ]
+        )
+        return self._sign(to_sign, nonce, time.time())
 
 
 if TYPE_CHECKING:

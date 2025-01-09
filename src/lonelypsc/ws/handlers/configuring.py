@@ -128,6 +128,13 @@ async def _check_read_task(state: StateConfiguring) -> CheckStateChangerResult:
         )
 
     parsed_message = B2S_ConfirmConfigureParser.parse(prefix.flags, prefix.type, stream)
+
+    auth_result = await state.config.is_websocket_confirm_configure_allowed(
+        message=parsed_message, now=time.time()
+    )
+    if auth_result != "ok":
+        raise PubSubError(f"confirm configure authorization failed: {auth_result}")
+
     connection_nonce = hashlib.sha256(
         state.subscriber_nonce + parsed_message.broadcaster_nonce
     ).digest()

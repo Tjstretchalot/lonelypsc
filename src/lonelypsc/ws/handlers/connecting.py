@@ -1,6 +1,6 @@
 import asyncio
 import secrets
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List
 
 from lonelypsp.stateful.constants import SubscriberToBroadcasterStatefulMessageType
 from lonelypsp.stateful.messages.configure import S2B_Configure, serialize_s2b_configure
@@ -76,11 +76,21 @@ async def _recover(state: StateConnecting, /, *, cause: BaseException) -> State:
 
 
 async def _shutdown(state: StateConnecting, /, *, cause: BaseException) -> State:
+    cleanup_excs: List[BaseException] = []
+    if state.websocket_task.done():
+        try:
+            websocket = state.websocket_task.result()
+            await websocket.close()
+        except BaseException as e:
+            cleanup_excs.append(e)
     try:
         await state.client_session.close()
     except BaseException as e:
+        cleanup_excs.append(e)
+
+    if cleanup_excs:
         cause = combine_multiple_exceptions(
-            "failed to close session", [e], context=cause
+            "failed to close websocket", cleanup_excs, context=cause
         )
 
     await cleanup_tasks_and_raise(
@@ -148,6 +158,15 @@ async def _check_websocket(state: StateConnecting) -> CheckStateChangerResult:
 
     websocket = state.websocket_task.result()
     subscriber_nonce = secrets.token_bytes(32)
+    enable_zstd = state.config.allow_compression
+    enable_training = state.config.allow_training_compression
+    initial_dict = state.config.initial_compression_dict_id or 0
+    authorization = await state.config.setup_websocket_configure(
+        subscriber_nonce=subscriber_nonce,
+        enable_zstd=enable_zstd,
+        enable_training=enable_training,
+        initial_dict=initial_dict,
+    )
     return CheckStateChangerResultDone(
         type=CheckResult.RESTART,
         state=StateConfiguring(
@@ -166,9 +185,10 @@ async def _check_websocket(state: StateConnecting) -> CheckStateChangerResult:
                         S2B_Configure(
                             type=SubscriberToBroadcasterStatefulMessageType.CONFIGURE,
                             subscriber_nonce=subscriber_nonce,
-                            enable_zstd=state.config.allow_compression,
-                            enable_training=state.config.allow_training_compression,
-                            initial_dict=state.config.initial_compression_dict_id or 0,
+                            enable_zstd=enable_zstd,
+                            enable_training=enable_training,
+                            initial_dict=initial_dict,
+                            authorization=authorization,
                         ),
                         minimal_headers=state.config.websocket_minimal_headers,
                     )

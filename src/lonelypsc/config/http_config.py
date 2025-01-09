@@ -10,6 +10,7 @@ from typing import (
 )
 
 from fastapi import APIRouter
+from lonelypsp.stateful.messages.confirm_configure import B2S_ConfirmConfigure
 from lonelypsp.stateless.make_strong_etag import StrongEtag
 
 from lonelypsc.config.auth_config import AuthConfig
@@ -318,6 +319,13 @@ class HttpPubSubConfigFromParts:
             recovery=recovery, topic=topic, now=now, authorization=authorization
         )
 
+    async def is_websocket_confirm_configure_allowed(
+        self, /, *, message: B2S_ConfirmConfigure, now: float
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        return await self.auth_config.is_websocket_confirm_configure_allowed(
+            message=message, now=now
+        )
+
     async def setup_incoming_auth(self) -> None:
         await self.auth_config.setup_incoming_auth()
 
@@ -374,6 +382,22 @@ class HttpPubSubConfigFromParts:
             url=url,
             strong_etag=strong_etag,
             now=now,
+        )
+
+    async def setup_websocket_configure(
+        self,
+        /,
+        *,
+        subscriber_nonce: bytes,
+        enable_zstd: bool,
+        enable_training: bool,
+        initial_dict: int,
+    ) -> Optional[str]:
+        return await self.auth_config.setup_websocket_configure(
+            subscriber_nonce=subscriber_nonce,
+            enable_zstd=enable_zstd,
+            enable_training=enable_training,
+            initial_dict=initial_dict,
         )
 
 

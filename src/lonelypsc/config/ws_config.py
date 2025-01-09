@@ -1,6 +1,7 @@
 import asyncio
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Protocol, Tuple, Type
 
+from lonelypsp.stateful.messages.confirm_configure import B2S_ConfirmConfigure
 from lonelypsp.stateless.make_strong_etag import StrongEtag
 
 from lonelypsc.config.auth_config import AuthConfig
@@ -552,6 +553,13 @@ class WebsocketPubSubConfigFromParts:
             recovery=recovery, topic=topic, now=now, authorization=authorization
         )
 
+    async def is_websocket_confirm_configure_allowed(
+        self, /, *, message: B2S_ConfirmConfigure, now: float
+    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        return await self.auth.is_websocket_confirm_configure_allowed(
+            message=message, now=now
+        )
+
     async def setup_subscribe_exact_authorization(
         self, /, *, url: str, recovery: Optional[str], exact: bytes, now: float
     ) -> Optional[str]:
@@ -596,6 +604,22 @@ class WebsocketPubSubConfigFromParts:
             url=url,
             strong_etag=strong_etag,
             now=now,
+        )
+
+    async def setup_websocket_configure(
+        self,
+        /,
+        *,
+        subscriber_nonce: bytes,
+        enable_zstd: bool,
+        enable_training: bool,
+        initial_dict: int,
+    ) -> Optional[str]:
+        return await self.auth.setup_websocket_configure(
+            subscriber_nonce=subscriber_nonce,
+            enable_zstd=enable_zstd,
+            enable_training=enable_training,
+            initial_dict=initial_dict,
         )
 
 
