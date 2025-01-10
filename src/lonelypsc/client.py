@@ -1229,7 +1229,7 @@ class PubSubClient:
             excs.append(e)
 
         if excs:
-            raise excs[0]
+            raise combine_multiple_exceptions("failed to teardown", excs)
 
     def _reserve_subscription_id(self) -> int:
         """An asyncio-safe (since it doesn't yield) way to reserve a subscription
