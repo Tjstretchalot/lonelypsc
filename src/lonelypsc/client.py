@@ -1192,7 +1192,9 @@ class PubSubClient:
             excs.append(e)
 
         async with self._subscribing_lock:
-            if (bulk := self.connector.get_bulk()) is not None:
+            if (bulk := self.connector.get_bulk()) is not None and (
+                self.exact_subscriptions or self.glob_subscriptions
+            ):
                 try:
                     await bulk.set_subscriptions(exact=[], globs=[])
                     self.exact_subscriptions = dict()

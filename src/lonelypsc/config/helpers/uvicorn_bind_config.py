@@ -41,24 +41,27 @@ class BindWithUvicornCallback:
             await server.shutdown()
             return
 
-        main_loop_task = asyncio.create_task(server.main_loop())
-        canceled_task = asyncio.create_task(cancel_event.wait())
-        await asyncio.wait(
-            [main_loop_task, canceled_task], return_when=asyncio.FIRST_COMPLETED
-        )
+        # server.main_loop relies on sleeping but isn't safe to cancel because
+        # it might be in on_tick if unlucky; so we reimplement here
+        cancel_event_wait_task = asyncio.create_task(cancel_event.wait())
 
-        if await cancel_and_check(canceled_task, False) is False:
-            # canceled_task was canceled, meaning main loop must have ended!
-            assert main_loop_task.done()
-        else:
-            # canceled_task completed normally, request shutdown in main loop
-            server.should_exit = True
+        counter = 0
+        while not await server.on_tick(counter):
+            counter += 1
+            if counter == 864000:
+                counter = 0
 
-        # raise any errors and shutdown
-        try:
-            await main_loop_task
-        finally:
-            await server.shutdown()
+            sleep_task = asyncio.create_task(asyncio.sleep(0.1))
+            await asyncio.wait(
+                [sleep_task, cancel_event_wait_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if await cancel_and_check(sleep_task, True):
+                # since sleep_task wasn't done, must have been canceled
+                assert cancel_event_wait_task.done()
+                break
+
+        await server.shutdown()
 
     async def __call__(self, router: APIRouter) -> None:
         app = FastAPI()

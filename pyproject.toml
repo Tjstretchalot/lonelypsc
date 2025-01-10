@@ -1,6 +1,6 @@
 [project]
 name = "lonelypsc"
-version = "0.0.5"
+version = "0.0.6"
 description = "PubSub over HTTP (subscriber side)"
 readme = "README.md"
 authors = [
