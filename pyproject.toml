@@ -1,6 +1,6 @@
 [project]
 name = "lonelypsc"
-version = "0.0.6"
+version = "0.0.7"
 description = "PubSub over HTTP (subscriber side)"
 readme = "README.md"
 authors = [
@@ -29,7 +29,8 @@ dependencies = [
 
 [project.optional-dependencies]
 standard = [
-    "zstandard>=0.23"
+    "zstandard>=0.23",
+    "websockets>=14.1"
 ]
 
 [tool.ruff]
