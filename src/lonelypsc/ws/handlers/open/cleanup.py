@@ -1,3 +1,4 @@
+import os
 from typing import List
 
 from lonelypsp.stateful.constants import BroadcasterToSubscriberStatefulMessageType
@@ -13,6 +14,7 @@ from lonelypsc.ws.state import (
     ClosingRetryInformationWantRetry,
     InternalMessageStateSent,
     InternalMessageStateType,
+    InternalMessageType,
     OpenRetryInformationType,
     ReceivedMessageType,
     ReceivingState,
@@ -156,6 +158,8 @@ def _build_tasks(state: StateOpen) -> TasksOnceOpen:
             for m in state.sent_notifications
         )
     ):
+        if state.sending.internal_message.type == InternalMessageType.LARGE:
+            state.sending.internal_message.stream.seek(0, os.SEEK_SET)
         state.resending_notifications.append(state.sending.internal_message)
         state.sending = None
 

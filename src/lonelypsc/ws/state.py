@@ -406,6 +406,8 @@ class InternalLargeMessage:
     stream: SyncStandardIO
     """the readable, seekable, tellable stream that the message data is read from
 
+    guarranteed to have data starting at tell() == 0
+
     no read() calls that would read past the indicated length from the stream will 
     be made
 

@@ -45,6 +45,7 @@ from lonelypsc.types.sync_io import (
     SyncStandardIO,
 )
 from lonelypsc.util.errors import combine_multiple_exceptions
+from lonelypsc.util.io_helpers import PositionedSyncStandardIO
 from lonelypsc.ws.handlers.handler import handle_any
 from lonelypsc.ws.state import (
     ClosingRetryInformationType,
@@ -582,7 +583,7 @@ class WSPubSubConnectorReceiver:
         """informs receivers about a small message; see _handle_received_message for
         more information
         """
-        for recv in receivers:
+        for recv in list(receivers):
             try:
                 await recv.on_message(
                     PubSubClientMessageWithCleanup(
@@ -606,7 +607,7 @@ class WSPubSubConnectorReceiver:
         """
         try:
             data_starts_at = message.stream.tell()
-            for recv in receivers:
+            for recv in list(receivers):
                 try:
                     event = asyncio.Event()
 
@@ -784,6 +785,13 @@ class WSPubSubConnectorReceiver:
                 callback=callback,
             )
         else:
+            message_start = message.tell()
+            if message.tell() != 0:
+                message = PositionedSyncStandardIO(
+                    message,
+                    start_idx=message_start,
+                    end_idx=message_start + length,
+                )
             msg = InternalLargeMessage(
                 type=InternalMessageType.LARGE,
                 identifier=identifier,

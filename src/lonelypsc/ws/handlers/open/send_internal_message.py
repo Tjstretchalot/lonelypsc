@@ -99,6 +99,7 @@ async def send_internal_large_message(
 
     WARN: does not inform the message callback
     """
+    assert message.stream.tell() == 0, "stream must be at start"
     compressor = state.compressors.get_for_compression(message.length)
     if compressor is None:
         return await send_internal_large_message_uncompressed(state, message)
@@ -250,9 +251,6 @@ async def send_internal_large_message_compressed(
     WARN: does not inform the message callback
     """
     spool_size = state.config.max_websocket_message_size or (2**64 - 1)
-    authorization = await state.config.authorize_notify(
-        topic=message.topic, message_sha512=message.sha512, now=time.time()
-    )
 
     with tempfile.SpooledTemporaryFile(max_size=spool_size) as compressed:
         with reserve_compressor(state, compressor) as reservation:
@@ -291,6 +289,9 @@ async def send_internal_large_message_compressed(
 
         compressed.seek(0, os.SEEK_SET)
         if compressed_length > spool_size:
+            authorization = await state.config.authorize_notify(
+                topic=message.topic, message_sha512=compressed_sha512, now=time.time()
+            )
             return await send_notify_stream_given_first_headers(
                 state=state,
                 stream=compressed,
@@ -323,6 +324,7 @@ async def send_internal_large_message_compressed(
         message,
         compressor_id=compressor.identifier,
         compressed_data=compressed_data,
+        compressed_sha512=compressed_sha512,
     )
 
 
@@ -333,6 +335,7 @@ async def send_internal_small_message_compressed_with_compressed_data(
     *,
     compressor_id: int,
     compressed_data: bytes,
+    compressed_sha512: Optional[bytes] = None,
 ) -> None:
     """Sends the given internal message where the uncompressed data may or may
     not be small enough to hold in memory but the compressed data is small enough
@@ -340,11 +343,12 @@ async def send_internal_small_message_compressed_with_compressed_data(
 
     WARN: does not inform the message callback
     """
-    compressed_sha512 = hashlib.sha512(compressed_data).digest()
+    if compressed_sha512 is None:
+        compressed_sha512 = hashlib.sha512(compressed_data).digest()
 
     identifier = secrets.token_bytes(4)
     authorization = await state.config.authorize_notify(
-        topic=message.topic, message_sha512=message.sha512, now=time.time()
+        topic=message.topic, message_sha512=compressed_sha512, now=time.time()
     )
 
     message_length = (
@@ -437,8 +441,8 @@ async def send_notify_stream_given_first_headers(
             compressed, the sha512 of the compressed data)
         first_headers (bytes): the headers for the first message which lets the broadcaster
             know how to interpret the stream
-        msg (InternalMessage): the message to add to sent_notifications right before sending
-            the last part of the stream
+        msg (InternalMessage): the message to add to sent_notifications before sending the
+            first message
     """
     headers = first_headers
     msg_size = state.config.max_websocket_message_size or (2**64 - 1)
@@ -465,7 +469,7 @@ async def send_notify_stream_given_first_headers(
                 part_id=part_id,
             )
         )
-        if is_done:
+        if part_id == 0:
             state.sent_notifications.append(msg)
         await state.websocket.send_bytes(headers + payload)
 
