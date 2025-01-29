@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import io
 import os
-import secrets
 import tempfile
 import time
 from typing import Optional, Union
@@ -119,11 +118,11 @@ async def send_internal_small_message_uncompressed(
     WARN: does not inform the message callback
     """
     tracing = b""  # TODO: tracing
-    identifier = secrets.token_bytes(4)
+
     authorization = await state.config.authorize_notify(
         tracing=tracing,
         topic=message.topic,
-        identifier=identifier,
+        identifier=message.identifier,
         message_sha512=message.sha512,
         now=time.time(),
     )
@@ -366,12 +365,11 @@ async def send_internal_small_message_compressed_with_compressed_data(
     if compressed_sha512 is None:
         compressed_sha512 = hashlib.sha512(compressed_data).digest()
 
-    identifier = secrets.token_bytes(4)
     tracing = b""  # TODO: tracing
     authorization = await state.config.authorize_notify(
         tracing=tracing,
         topic=message.topic,
-        identifier=identifier,
+        identifier=message.identifier,
         message_sha512=compressed_sha512,
         now=time.time(),
     )
@@ -391,7 +389,7 @@ async def send_internal_small_message_compressed_with_compressed_data(
                 type=SubscriberToBroadcasterStatefulMessageType.NOTIFY,
                 authorization=authorization,
                 tracing=b"",  # TODO: tracing
-                identifier=identifier,
+                identifier=message.identifier,
                 compressor_id=compressor_id,
                 topic=message.topic,
                 verified_compressed_sha512=compressed_sha512,
@@ -407,7 +405,7 @@ async def send_internal_small_message_compressed_with_compressed_data(
             state.expected_acks.append(
                 B2S_ConfirmNotify(
                     type=BroadcasterToSubscriberStatefulMessageType.CONFIRM_NOTIFY,
-                    identifier=identifier,
+                    identifier=message.identifier,
                     subscribers=-1,
                     authorization=None,
                     tracing=b"",
@@ -421,7 +419,7 @@ async def send_internal_small_message_compressed_with_compressed_data(
         state=state,
         stream=io.BytesIO(compressed_data),
         length=len(compressed_data),
-        identifier=identifier,
+        identifier=message.identifier,
         topic=message.topic,
         sha512=message.sha512,
         first_headers=serialize_s2b_notify_stream(
@@ -429,7 +427,7 @@ async def send_internal_small_message_compressed_with_compressed_data(
                 type=SubscriberToBroadcasterStatefulMessageType.NOTIFY_STREAM,
                 authorization=authorization,
                 tracing=b"",  # TODO: tracing
-                identifier=identifier,
+                identifier=message.identifier,
                 part_id=None,
                 topic=message.topic,
                 compressor_id=compressor_id,

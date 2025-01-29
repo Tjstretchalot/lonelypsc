@@ -1,6 +1,8 @@
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
+from lonelypsp.auth.config import AuthResult
 from lonelypsp.stateful.messages.enable_zstd_custom import B2S_EnableZstdCustom
 
 from lonelypsc.client import PubSubError
@@ -10,7 +12,12 @@ from lonelypsc.ws.compressor import (
     CompressorState,
 )
 from lonelypsc.ws.handlers.open.messages.protocol import MessageChecker
+from lonelypsc.ws.handlers.open.websocket_url import (
+    make_for_receive_websocket_url_and_change_counter,
+)
 from lonelypsc.ws.state import (
+    ReceivingAuthorizingSimple,
+    ReceivingState,
     StateOpen,
 )
 
@@ -35,11 +42,13 @@ def _make_compressor(message: B2S_EnableZstdCustom) -> CompressorReady:
     )
 
 
-def check_enable_zstd_custom(state: StateOpen, message: B2S_EnableZstdCustom) -> None:
-    """Handles the subscriber receiving the a message from the broadcaster that
-    the broadcaster has created a dictionary for compressing the types of
-    messages that have been sent over this websocket
-    """
+async def _target(state: StateOpen, message: B2S_EnableZstdCustom) -> None:
+    receive_url = make_for_receive_websocket_url_and_change_counter(state)
+    auth_result = await state.config.is_stateful_enable_zstd_custom_allowed(
+        url=receive_url, message=message, now=time.time()
+    )
+    if auth_result != AuthResult.OK:
+        raise PubSubError(f"enable zstd custom authorization failed: {auth_result}")
     if not state.config.allow_compression:
         raise PubSubError("compression is disabled but a dictionary was received")
     if not state.config.allow_training_compression:
@@ -53,6 +62,18 @@ def check_enable_zstd_custom(state: StateOpen, message: B2S_EnableZstdCustom) ->
             identifier=message.identifier,
             task=asyncio.create_task(asyncio.to_thread(_make_compressor, message)),
         )
+    )
+
+
+def check_enable_zstd_custom(state: StateOpen, message: B2S_EnableZstdCustom) -> None:
+    """Handles the subscriber receiving the a message from the broadcaster that
+    the broadcaster has created a dictionary for compressing the types of
+    messages that have been sent over this websocket
+    """
+    assert state.receiving is None, "already have receiving task"
+    state.receiving = ReceivingAuthorizingSimple(
+        type=ReceivingState.AUTHORIZING_SIMPLE,
+        task=asyncio.create_task(_target(state, message)),
     )
 
 

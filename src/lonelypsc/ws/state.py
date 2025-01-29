@@ -610,6 +610,11 @@ class ReceivingState(Enum):
     AUTHORIZING_MISSED = auto()
     """Waiting for the authorization task to complete on a missed message"""
 
+    AUTHORIZING_SIMPLE = auto()
+    """Waiting for the authorization task to complete on a message which just
+    configures this connection (i.e., isn't important for retries)
+    """
+
     AUTHORIZING = auto()
     """Waiting for the authorization task to complete"""
 
@@ -632,7 +637,7 @@ class ReceivingIncomplete:
     """
 
     type: Literal[ReceivingState.INCOMPLETE]
-    """disciminator value"""
+    """discriminator value"""
 
     first: Union[B2S_ReceiveStreamStartUncompressed, B2S_ReceiveStreamStartCompressed]
     """The first stream message with this id, with the payload stripped out"""
@@ -662,13 +667,26 @@ class ReceivingAuthorizingMissed:
     """
 
     type: Literal[ReceivingState.AUTHORIZING_MISSED]
-    """disciminator value"""
+    """discriminator value"""
 
     message: B2S_Missed
     """the message that was received"""
 
     authorization_task: asyncio.Task[AuthResult]
     """the task the subscriber is waiting on to finish checking the messages authorization"""
+
+
+@fast_dataclass
+class ReceivingAuthorizingSimple:
+    """The subscriber has received a configuration style message (e.g. DISABLE_ZSTD_PRESET)
+    and is waiting to verify that the authorization is valid and/or applying the change
+    """
+
+    type: Literal[ReceivingState.AUTHORIZING_SIMPLE]
+    """discriminator value"""
+
+    task: asyncio.Task[None]
+    """the task that is applying the change"""
 
 
 @fast_dataclass
@@ -681,7 +699,7 @@ class ReceivingAuthorizing:
     """
 
     type: Literal[ReceivingState.AUTHORIZING]
-    """disciminator value"""
+    """discriminator value"""
 
     first: Union[B2S_ReceiveStreamStartUncompressed, B2S_ReceiveStreamStartCompressed]
     """The first stream message with this id, with the payload stripped out"""
@@ -706,7 +724,7 @@ class ReceivingWaitingCompressor:
     """
 
     type: Literal[ReceivingState.WAITING_COMPRESSOR]
-    """disciminator value"""
+    """discriminator value"""
 
     first: B2S_ReceiveStreamStartCompressed
     """The first stream message with this id, with the payload stripped out"""
@@ -727,7 +745,7 @@ class ReceivingDecompressing:
     """
 
     type: Literal[ReceivingState.DECOMPRESSING]
-    """disciminator value"""
+    """discriminator value"""
 
     task: asyncio.Task[ReceivedMessage]
     """the task that will produce the received message"""
@@ -736,6 +754,7 @@ class ReceivingDecompressing:
 Receiving = Union[
     ReceivingIncomplete,
     ReceivingAuthorizingMissed,
+    ReceivingAuthorizingSimple,
     ReceivingAuthorizing,
     ReceivingWaitingCompressor,
     ReceivingDecompressing,

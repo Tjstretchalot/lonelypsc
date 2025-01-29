@@ -65,6 +65,8 @@ async def wait_something_changed(state: StateOpen) -> None:
             or state.receiving.type == ReceivingState.AUTHORIZING_MISSED
         ):
             other_tasks.append(state.receiving.authorization_task)
+        elif state.receiving.type == ReceivingState.AUTHORIZING_SIMPLE:
+            other_tasks.append(state.receiving.task)
         elif state.receiving.type == ReceivingState.WAITING_COMPRESSOR:
             ...  # already have compressor tasks in other_tasks
         elif state.receiving.type == ReceivingState.DECOMPRESSING:

@@ -5,12 +5,12 @@ import io
 import time
 from typing import TYPE_CHECKING, Any, Set, cast
 
+from lonelypsp.auth.config import AuthResult
 from lonelypsp.stateful.constants import BroadcasterToSubscriberStatefulMessageType
 from lonelypsp.stateful.messages.confirm_configure import B2S_ConfirmConfigureParser
 from lonelypsp.stateful.parser_helpers import parse_b2s_message_prefix
 from lonelypsp.util.bounded_deque import BoundedDeque
 from lonelypsp.util.drainable_asyncio_queue import DrainableAsyncioQueue
-from lonelypsp.auth.config import AuthResult
 
 from lonelypsc.client import (
     PubSubCancelRequested,

@@ -11,6 +11,9 @@ from lonelypsc.ws.handlers.open.check_receiving_authorizing import (
 from lonelypsc.ws.handlers.open.check_receiving_authorizing_missed import (
     check_receiving_authorizing_missed,
 )
+from lonelypsc.ws.handlers.open.check_receiving_authorizing_simple import (
+    check_receiving_authorizing_simple,
+)
 from lonelypsc.ws.handlers.open.check_receiving_decompressing import (
     check_receiving_decompressing,
 )
@@ -52,6 +55,8 @@ async def _core(state: StateOpen) -> State:
         raise PubSubCancelRequested()
 
     if check_receiving_authorizing_missed(state) == CheckResult.RESTART:
+        return state
+    if check_receiving_authorizing_simple(state) == CheckResult.RESTART:
         return state
     if check_receiving_authorizing(state) == CheckResult.RESTART:
         return state
