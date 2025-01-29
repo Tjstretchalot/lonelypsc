@@ -664,7 +664,7 @@ class HttpPubSubClientConnector(Generic[InitializerT]):
         length: int,
         message_sha512: bytes,
         tracer: StatelessTracingNotifyOnSending,
-    ) -> HttpPubSubNotifyResult:
+    ) -> "HttpPubSubNotifyResult":
         assert self._session is not None, "not set up"
         assert self._shuffler is not None, "not set up"
         initial_message_tell = message.tell()
