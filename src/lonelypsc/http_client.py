@@ -814,8 +814,10 @@ class HttpPubSubClientReceiver:
         if repr_digest is None:
             return Response(
                 status_code=400,
-                headers={"Content-Type": "application/json; charset=utf-8"},
-                content=b'{"unsubscribe": true, "reason": "missing repr-digest header"}',
+                headers={"Content-Type": "application/octet-stream"},
+                content=int(
+                    SubscriberToBroadcasterStatelessMessageType.RESPONSE_UNSUBSCRIBE_IMMEDIATE
+                ).to_bytes(2, "big"),
             )
 
         expected_digest_b64: Optional[str] = None
@@ -832,8 +834,10 @@ class HttpPubSubClientReceiver:
         if expected_digest_b64 is None:
             return Response(
                 status_code=400,
-                headers={"Content-Type": "application/json; charset=utf-8"},
-                content=b'{"unsubscribe": true, "reason": "missing sha-512 repr-digest"}',
+                headers={"Content-Type": "application/octet-stream"},
+                content=int(
+                    SubscriberToBroadcasterStatelessMessageType.RESPONSE_UNSUBSCRIBE_IMMEDIATE
+                ).to_bytes(2, "big"),
             )
 
         try:
@@ -841,8 +845,10 @@ class HttpPubSubClientReceiver:
         except BaseException:
             return Response(
                 status_code=400,
-                headers={"Content-Type": "application/json; charset=utf-8"},
-                content=b'{"unsubscribe": true, "reason": "unparseable sha-512 repr-digest (not base64)"}',
+                headers={"Content-Type": "application/octet-stream"},
+                content=int(
+                    SubscriberToBroadcasterStatelessMessageType.RESPONSE_UNSUBSCRIBE_IMMEDIATE
+                ).to_bytes(2, "big"),
             )
 
         stream = request.stream()
@@ -1202,7 +1208,9 @@ if TYPE_CHECKING:
     ___: Type[PubSubClientReceiver] = HttpPubSubClientReceiver
 
 
-def HttpPubSubClient(config: HttpPubSubConfig) -> PubSubClient:
+def HttpPubSubClient(
+    config: HttpPubSubConfig[InitializerT],
+) -> PubSubClient[InitializerT, StatelessTracingNotifyOnSending]:
     """A constructor-like function that creates a pub sub client that connects
     via outgoing HTTP calls and receives notifications via incoming HTTP calls
     """

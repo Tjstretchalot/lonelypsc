@@ -945,7 +945,7 @@ class WSPubSubConnectorReceiver:
         self.state.removed_status_receivers.put_nowait(registration_id)
 
 
-def WebsocketPubSubClient(config: WebsocketPubSubConfig) -> PubSubClient:
+def WebsocketPubSubClient(config: WebsocketPubSubConfig) -> PubSubClient[None, None]:
     """A constructor-like function that creates a PubSubClient that communicates
     over a websocket, handling retries and reconnections as necessary. It is
     typically important when using this to pass `on_receiving` when subscribing,

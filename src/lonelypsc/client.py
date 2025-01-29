@@ -1188,7 +1188,7 @@ class PubSubClient(Generic[InitializerT, NotifierT]):
         methods
         """
 
-    async def __aenter__(self) -> "PubSubClient":
+    async def __aenter__(self) -> "PubSubClient[InitializerT, NotifierT]":
         assert not self._entered, "already entered (not re-entrant)"
         await self._setup()
         self._entered = True
