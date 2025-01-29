@@ -158,10 +158,12 @@ async def _check_websocket(state: StateConnecting) -> CheckStateChangerResult:
 
     websocket = state.websocket_task.result()
     subscriber_nonce = secrets.token_bytes(32)
+    tracing = b""  # TODO: tracing
     enable_zstd = state.config.allow_compression
     enable_training = state.config.allow_training_compression
     initial_dict = state.config.initial_compression_dict_id or 0
     authorization = await state.config.authorize_stateful_configure(
+        tracing=tracing,
         subscriber_nonce=subscriber_nonce,
         enable_zstd=enable_zstd,
         enable_training=enable_training,
@@ -189,6 +191,7 @@ async def _check_websocket(state: StateConnecting) -> CheckStateChangerResult:
                             enable_training=enable_training,
                             initial_dict=initial_dict,
                             authorization=authorization,
+                            tracing=tracing,
                         ),
                         minimal_headers=state.config.websocket_minimal_headers,
                     )

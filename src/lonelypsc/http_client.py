@@ -2,7 +2,6 @@ import asyncio
 import base64
 import hashlib
 import io
-import json
 import random
 import tempfile
 import time
@@ -10,7 +9,9 @@ from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Annotated,
+    ContextManager,
     Dict,
+    Generic,
     List,
     Literal,
     Optional,
@@ -27,11 +28,21 @@ from aiohttp.typedefs import LooseHeaders
 from fastapi import APIRouter, Header
 from fastapi.requests import Request
 from fastapi.responses import Response
+from lonelypsp.auth.config import AuthResult
+from lonelypsp.compat import assert_never
+from lonelypsp.stateful.parser_helpers import read_exact
+from lonelypsp.stateless.constants import (
+    BroadcasterToSubscriberStatelessMessageType,
+    SubscriberToBroadcasterStatelessMessageType,
+)
 from lonelypsp.stateless.make_strong_etag import (
     GlobAndRecovery,
     StrongEtag,
     TopicAndRecovery,
     make_strong_etag,
+)
+from lonelypsp.tracing.stateless.notify import (
+    StatelessTracingNotifyOnSending,
 )
 from lonelypsp.util.cancel_and_check import cancel_and_check
 from starlette.background import BackgroundTask
@@ -43,28 +54,34 @@ from lonelypsc.client import (
     PubSubClientConnector,
     PubSubClientMessageWithCleanup,
     PubSubClientReceiver,
+    PubSubClientTracingNotifyStart,
     PubSubDirectConnectionStatusReceiver,
     PubSubDirectOnMessageWithCleanupReceiver,
     PubSubNotifyResult,
     PubSubRequestAmbiguousError,
+    PubSubRequestError,
     PubSubRequestRefusedError,
     PubSubRequestRetriesExhaustedError,
 )
 from lonelypsc.config.config import BroadcastersShuffler, PubSubBroadcasterConfig
 from lonelypsc.config.helpers.uvicorn_bind_config import handle_bind_with_uvicorn
 from lonelypsc.config.http_config import HttpPubSubConfig
+from lonelypsc.http.notify.action import HttpNotifyAction, HttpNotifyInfo
+from lonelypsc.http.retrier import (
+    BroadcasterRetryableActionResult,
+    attempt_broadcasters,
+)
 from lonelypsc.types.sync_io import SyncStandardIO
+from lonelypsc.util.async_io import async_read_exact
 from lonelypsc.util.errors import combine_multiple_exceptions
 from lonelypsc.util.io_helpers import (
     PositionedSyncStandardIO,
-    PrefixedSyncStandardIO,
 )
+from lonelypsc.util.request_body_io import AsyncIterableAIO
 
-# We can return T, or a subset of T
-T_co = TypeVar("T_co", covariant=True)
-
-# We will return a T
 T = TypeVar("T")
+T_co = TypeVar("T_co", covariant=True)
+InitializerT = TypeVar("InitializerT")
 
 
 class _BroadcasterCallable(Protocol[T_co]):
@@ -81,8 +98,8 @@ if TYPE_CHECKING:
     _: Type[PubSubNotifyResult] = HttpPubSubNotifyResult
 
 
-class HttpPubSubClientConnector:
-    def __init__(self, config: HttpPubSubConfig) -> None:
+class HttpPubSubClientConnector(Generic[InitializerT]):
+    def __init__(self, config: HttpPubSubConfig[InitializerT]) -> None:
         self.config = config
         """The configuration that dictates how we behave"""
 
@@ -330,10 +347,15 @@ class HttpPubSubClientConnector:
         assert self._session is not None, "not set up"
         receive_url = self._receive_url
         recovery_url = self._recovery_url
+        tracing = b""  # TODO: tracing
 
         auth_at = time.time()
         authorization = await self.config.authorize_subscribe_exact(
-            url=receive_url, recovery=recovery_url, exact=topic, now=auth_at
+            tracing=tracing,
+            url=receive_url,
+            recovery=recovery_url,
+            exact=topic,
+            now=auth_at,
         )
         headers: Dict[str, str] = {
             "Content-Type": "application/octet-stream",
@@ -351,24 +373,34 @@ class HttpPubSubClientConnector:
         body.write(topic)
         body.write(len(encoded_recovery_url).to_bytes(2, "big", signed=False))
         body.write(encoded_recovery_url)
+        body.write(len(tracing).to_bytes(2, "big", signed=False))
+        body.write(tracing)
 
         result = await self._make_small_request(
             method="POST",
             headers=headers,
             path="/v1/subscribe/exact",
             body=body.getvalue(),
-            special_ok_codes={409},
+            special_ok_codes={
+                409
+            },  # TODO: treat as failure (auth is being skipped) and update docs
         )
         self._raise_for_error(result)
+        # TODO: check response auth
 
     async def subscribe_glob(self, /, *, glob: str) -> None:
         assert self._session is not None, "not set up"
         receive_url = self._receive_url
         recovery_url = self._recovery_url
+        tracing = b""
 
         auth_at = time.time()
         authorization = await self.config.authorize_subscribe_glob(
-            url=receive_url, recovery=recovery_url, glob=glob, now=auth_at
+            tracing=tracing,
+            url=receive_url,
+            recovery=recovery_url,
+            glob=glob,
+            now=auth_at,
         )
         headers: Dict[str, str] = {
             "Content-Type": "application/octet-stream",
@@ -387,23 +419,27 @@ class HttpPubSubClientConnector:
         body.write(encoded_glob)
         body.write(len(encoded_recovery_url).to_bytes(2, "big", signed=False))
         body.write(encoded_recovery_url)
+        body.write(len(tracing).to_bytes(2, "big", signed=False))
+        body.write(tracing)
 
         result = await self._make_small_request(
             method="POST",
             headers=headers,
             path="/v1/subscribe/glob",
             body=body.getvalue(),
-            special_ok_codes={409},
+            special_ok_codes={409},  # TODO: treat as failure and update docs
         )
         self._raise_for_error(result)
+        # TODO: check response auth
 
     async def unsubscribe_exact(self, /, *, topic: bytes) -> None:
         assert self._session is not None, "not set up"
         receive_url = self._receive_url
 
         auth_at = time.time()
+        tracing = b""  # TODO: tracing
         authorization = await self.config.authorize_subscribe_exact(
-            url=receive_url, recovery=None, exact=topic, now=auth_at
+            tracing=tracing, url=receive_url, recovery=None, exact=topic, now=auth_at
         )
         headers: Dict[str, str] = {
             "Content-Type": "application/octet-stream",
@@ -418,23 +454,28 @@ class HttpPubSubClientConnector:
         body.write(encoded_receive_url)
         body.write(len(topic).to_bytes(2, "big", signed=False))
         body.write(topic)
+        body.write(len(tracing).to_bytes(2, "big", signed=False))
+        body.write(tracing)
 
         result = await self._make_small_request(
             method="POST",
             headers=headers,
             path="/v1/unsubscribe/exact",
             body=body.getvalue(),
-            special_ok_codes={409},
+            special_ok_codes={409},  # TODO: treat as failure and update docs
         )
         self._raise_for_error(result)
+
+        # TODO: check response auth
 
     async def unsubscribe_glob(self, /, *, glob: str) -> None:
         assert self._session is not None, "not set up"
         receive_url = self._receive_url
 
+        tracing = b""  # TODO: traicng
         auth_at = time.time()
         authorization = await self.config.authorize_subscribe_glob(
-            url=receive_url, recovery=None, glob=glob, now=auth_at
+            tracing=tracing, url=receive_url, recovery=None, glob=glob, now=auth_at
         )
         headers: Dict[str, str] = {
             "Content-Type": "application/octet-stream",
@@ -450,15 +491,18 @@ class HttpPubSubClientConnector:
         body.write(encoded_receive_url)
         body.write(len(encoded_glob).to_bytes(2, "big", signed=False))
         body.write(encoded_glob)
+        body.write(len(tracing).to_bytes(2, "big", signed=False))
+        body.write(tracing)
 
         result = await self._make_small_request(
             method="POST",
             headers=headers,
             path="/v1/unsubscribe/glob",
             body=body.getvalue(),
-            special_ok_codes={409},
+            special_ok_codes={409},  # TODO: treat as failure and update docs
         )
         self._raise_for_error(result)
+        # TODO: check response auth
 
     def get_bulk(self) -> Optional[PubSubClientBulkSubscriptionConnector]:
         return self
@@ -467,9 +511,10 @@ class HttpPubSubClientConnector:
         assert self._session is not None, "not set up"
         receive_url = self._receive_url
 
+        tracing = b""  # TODO: tracing
         auth_at = time.time()
         authorization = await self.config.authorize_check_subscriptions(
-            url=receive_url, now=auth_at
+            tracing=tracing, url=receive_url, now=auth_at
         )
         headers: Dict[str, str] = {
             "Content-Type": "application/octet-stream",
@@ -480,6 +525,8 @@ class HttpPubSubClientConnector:
         encoded_receive_url = receive_url.encode("utf-8")
 
         body = io.BytesIO()
+        body.write(len(tracing).to_bytes(2, "big", signed=False))
+        body.write(tracing)
         body.write(len(encoded_receive_url).to_bytes(2, "big", signed=False))
         body.write(encoded_receive_url)
 
@@ -493,10 +540,51 @@ class HttpPubSubClientConnector:
         self._raise_for_error(result)
         assert isinstance(result, bytes), "impossible"
 
-        if result[0] != 0:
+        rdr = io.BytesIO(result)
+        response_type_bytes = read_exact(rdr, 2)
+        response_type = int.from_bytes(response_type_bytes, "big", signed=False)
+
+        assert response_type == int(
+            BroadcasterToSubscriberStatelessMessageType.RESPONSE_CHECK_SUBSCRIPTIONS
+        ), f"{response_type=}"
+
+        resp_authorization_length_bytes = rdr.read(2)
+        resp_authorization_length = int.from_bytes(
+            resp_authorization_length_bytes, "big", signed=False
+        )
+        resp_authorization_bytes = read_exact(rdr, resp_authorization_length)
+        resp_authorization = (
+            None
+            if resp_authorization_bytes == b""
+            else resp_authorization_bytes.decode("utf-8")
+        )
+
+        resp_tracing_length_bytes = rdr.read(2)
+        resp_tracing_length = int.from_bytes(
+            resp_tracing_length_bytes, "big", signed=False
+        )
+        resp_tracing = read_exact(rdr, resp_tracing_length)
+
+        etag_format_bytes = rdr.read(1)
+        etag_format = int.from_bytes(etag_format_bytes, "big", signed=False)
+
+        if etag_format != 0:
             raise ValueError("invalid strong etag format")
 
-        return StrongEtag(format=0, etag=result[1:])
+        etag = rdr.read(64)
+        strong_etag = StrongEtag(format=0, etag=etag)
+
+        if not self.config.is_check_subscription_response_allowed(
+            tracing=resp_tracing,
+            strong_etag=strong_etag,
+            authorization=resp_authorization,
+            now=time.time(),
+        ):
+            raise PubSubRequestError(
+                "check subscription response failed authorization check"
+            )
+
+        return strong_etag
 
     async def set_subscriptions(
         self,
@@ -525,9 +613,10 @@ class HttpPubSubClientConnector:
             recheck_sort=False,
         )
 
+        tracing = b""  # TODO: tracing
         auth_at = time.time()
         authorization = await self.config.authorize_set_subscriptions(
-            url=receive_url, strong_etag=strong_etag, now=auth_at
+            tracing=tracing, url=receive_url, strong_etag=strong_etag, now=auth_at
         )
         headers: Dict[str, str] = {
             "Content-Type": "application/octet-stream",
@@ -537,6 +626,8 @@ class HttpPubSubClientConnector:
 
         encoded_receive_url = receive_url.encode("utf-8")
         body = io.BytesIO()
+        body.write(len(tracing).to_bytes(2, "big", signed=False))
+        body.write(tracing)
         body.write(len(encoded_receive_url).to_bytes(2, "big", signed=False))
         body.write(encoded_receive_url)
         body.write(strong_etag.format.to_bytes(1, "big", signed=False))
@@ -563,6 +654,15 @@ class HttpPubSubClientConnector:
         )
         self._raise_for_error(result)
 
+        # TODO: check response auth
+
+    def prepare_notifier_trace(
+        self, initializer: InitializerT, /
+    ) -> ContextManager[
+        PubSubClientTracingNotifyStart[StatelessTracingNotifyOnSending]
+    ]:
+        return self.config.tracing.notify(initializer)
+
     async def notify(
         self,
         /,
@@ -571,52 +671,37 @@ class HttpPubSubClientConnector:
         message: SyncStandardIO,
         length: int,
         message_sha512: bytes,
+        tracer: StatelessTracingNotifyOnSending,
     ) -> HttpPubSubNotifyResult:
         assert self._session is not None, "not set up"
-
-        auth_at = time.time()
-        authorization = await self.config.authorize_notify(
-            topic=topic, message_sha512=message_sha512, now=auth_at
-        )
-
+        assert self._shuffler is not None, "not set up"
         initial_message_tell = message.tell()
         normalized_message = PositionedSyncStandardIO(
             message,
             start_idx=initial_message_tell,
             end_idx=initial_message_tell + length,
         )
-
-        message_prefix = io.BytesIO()
-        message_prefix.write(len(topic).to_bytes(2, "big", signed=False))
-        message_prefix.write(topic)
-        message_prefix.write(message_sha512)
-        message_prefix.write(length.to_bytes(8, "big", signed=False))
-
-        body = PrefixedSyncStandardIO(
-            PositionedSyncStandardIO(message_prefix, 0, message_prefix.tell()),
-            normalized_message,
+        result = await attempt_broadcasters(
+            config=self.config,
+            shuffler=self._shuffler,
+            action=HttpNotifyAction(
+                config=self.config,
+                info=HttpNotifyInfo(
+                    topic=topic,
+                    normalized_message=normalized_message,
+                    sha512=message_sha512,
+                ),
+                session=self._session,
+                tracer=tracer,
+                seen_ambiguous=False,
+            ),
         )
-        headers: Dict[str, str] = {
-            "Content-Type": "application/octet-stream",
-            "Content-Length": str(len(body)),
-        }
-        if authorization is not None:
-            headers["Authorization"] = authorization
-
-        result = await self._make_large_post_request(
-            path="/v1/notify",
-            headers=headers,
-            body=body,
-        )
-        try:
-            self._raise_for_error(result)
-            assert not isinstance(result, str), "impossible"
-            result_json = await result.json()
-        finally:
-            if result != "ambiguous" and result != "refused" and result != "retry":
-                await result.__aexit__(None, None, None)
-
-        return HttpPubSubNotifyResult(notified=result_json["notified"])
+        if result.type == BroadcasterRetryableActionResult.FAILURE:
+            self._raise_for_error(result.result)
+            assert False, "unreachable"
+        if result.type != BroadcasterRetryableActionResult.SUCCESS:
+            assert_never(result)
+        return result.result
 
 
 if TYPE_CHECKING:
@@ -712,7 +797,6 @@ class HttpPubSubClientReceiver:
         request: Request,
         authorization: Annotated[Optional[str], Header()] = None,
         repr_digest: Annotated[Optional[str], Header()] = None,
-        x_topic: Annotated[Optional[str], Header()] = None,
     ) -> Response:
         """HttpPubSubClientReceiver primary endpoint
 
@@ -742,22 +826,6 @@ class HttpPubSubClientReceiver:
                 content=b'{"unsubscribe": true, "reason": "missing repr-digest header"}',
             )
 
-        if x_topic is None:
-            return Response(
-                status_code=400,
-                headers={"Content-Type": "application/json; charset=utf-8"},
-                content=b'{"unsubscribe": true, "reason": "missing x-topic header"}',
-            )
-
-        try:
-            topic = base64.b64decode(x_topic + "==")
-        except BaseException:
-            return Response(
-                status_code=400,
-                headers={"Content-Type": "application/json; charset=utf-8"},
-                content=b'{"unsubscribe": true, "reason": "invalid x-topic header"}',
-            )
-
         expected_digest_b64: Optional[str] = None
         for digest_pair in repr_digest.split(","):
             split_digest_pair = digest_pair.split("=", 1)
@@ -785,122 +853,199 @@ class HttpPubSubClientReceiver:
                 content=b'{"unsubscribe": true, "reason": "unparseable sha-512 repr-digest (not base64)"}',
             )
 
-        auth_result = await self.config.is_receive_allowed(
-            url=str(request.url),
-            topic=topic,
-            message_sha512=expected_digest,
-            now=time.time(),
-            authorization=authorization,
-        )
-        if auth_result == "unavailable":
-            async with self._status_handlers_lock:
-                if self.connection_status == PubSubClientConnectionStatus.OK:
-                    self.connection_status = PubSubClientConnectionStatus.LOST
-                    excs: List[BaseException] = []
-                    for _, status_handler in self.status_handlers:
-                        try:
-                            await status_handler.on_connection_lost()
-                        except BaseException as e:
-                            excs.append(e)
+        stream = request.stream()
+        try:
+            body = AsyncIterableAIO(stream)
 
-            return Response(
-                status_code=503,
-                background=(
-                    BackgroundTask(
-                        _raise_excs,
-                        "db auth unavailable then failed to inform status handlers",
-                        excs,
-                    )
-                    if excs
-                    else None
-                ),
+            try:
+                tracing_length_bytes = await async_read_exact(body, 2)
+                tracing_length = int.from_bytes(tracing_length_bytes, "big")
+                tracing = await async_read_exact(body, tracing_length)
+
+                topic_length_bytes = await async_read_exact(body, 2)
+                topic_length = int.from_bytes(topic_length_bytes, "big")
+                topic = await async_read_exact(body, topic_length)
+
+                identifier_length_bytes = await async_read_exact(body, 1)
+                identifier_length = int.from_bytes(identifier_length_bytes, "big")
+                identifier = await async_read_exact(body, identifier_length)
+
+                message_length_bytes = await async_read_exact(body, 8)
+                message_length = int.from_bytes(message_length_bytes, "big")
+            except ValueError:
+                return Response(status_code=400)
+
+            auth_result = await self.config.is_receive_allowed(
+                tracing=tracing,
+                url=str(request.url),
+                topic=topic,
+                message_sha512=expected_digest,
+                identifier=identifier,
+                now=time.time(),
+                authorization=authorization,
             )
+            if auth_result == AuthResult.UNAVAILABLE:
+                async with self._status_handlers_lock:
+                    if self.connection_status == PubSubClientConnectionStatus.OK:
+                        self.connection_status = PubSubClientConnectionStatus.LOST
+                        excs: List[BaseException] = []
+                        for _, status_handler in self.status_handlers:
+                            try:
+                                await status_handler.on_connection_lost()
+                            except BaseException as e:
+                                excs.append(e)
 
-        if auth_result != "ok":
-            return Response(
-                status_code=403,
-                headers={"Content-Type": "application/json; charset=utf-8"},
-                content=b'{"unsubscribe": true, "reason": '
-                + json.dumps(auth_result).encode("utf-8")
-                + b"}",
-            )
-
-        background_exceptions: List[BaseException] = []
-        async with self._status_handlers_lock:
-            if self.connection_status == PubSubClientConnectionStatus.LOST:
-                self.connection_status = PubSubClientConnectionStatus.OK
-                for _, status_handler in self.status_handlers:
-                    try:
-                        await status_handler.on_connection_established()
-                    except BaseException as e:
-                        background_exceptions.append(e)
-
-        with tempfile.SpooledTemporaryFile(
-            max_size=self.config.message_body_spool_size, mode="w+b"
-        ) as spooled_request_body:
-            read_length = 0
-            hasher = hashlib.sha512()
-            stream_iter = request.stream().__aiter__()
-            while True:
-                try:
-                    chunk = await stream_iter.__anext__()
-                except StopAsyncIteration:
-                    break
-                hasher.update(chunk)
-                read_length += len(chunk)
-                spooled_request_body.write(chunk)
-
-            real_digest = hasher.digest()
-            if real_digest != expected_digest:
-                background_exceptions.append(Exception("incorrect sha-512 repr-digest"))
                 return Response(
-                    status_code=403,
-                    headers={"Content-Type": "application/json; charset=utf-8"},
-                    content=b'{"unsubscribe": true, "reason": "incorrect sha-512 repr-digest"}',
+                    status_code=503,
                     background=(
                         BackgroundTask(
                             _raise_excs,
-                            "incorrect sha-512 repr-digest",
-                            background_exceptions,
+                            "db auth unavailable then failed to inform status handlers",
+                            excs,
                         )
+                        if excs
+                        else None
                     ),
                 )
 
-            for idx, (reg_id, handler) in enumerate(tuple(self.handlers)):
-                if len(self.handlers) <= idx or self.handlers[idx][0] != reg_id:
-                    for alt_idx in range(min(idx, len(self.handlers))):
-                        if self.handlers[alt_idx][0] == reg_id:
-                            break
-                    else:
-                        continue
-                spooled_request_body.seek(0)
-
-                # we want message.cleanup() not to interfere with future
-                # handlers if called multiple times, hence we make a new event
-                # per handler
-                handler_done = asyncio.Event()
-
-                async def handler_cleanup() -> None:
-                    handler_done.set()
-
-                message = PubSubClientMessageWithCleanup(
-                    topic=topic,
-                    sha512=real_digest,
-                    data=spooled_request_body,
-                    cleanup=handler_cleanup,
+            if auth_result != AuthResult.OK:
+                return Response(
+                    status_code=403,
+                    headers={"Content-Type": "application/octet-stream"},
+                    content=int(
+                        SubscriberToBroadcasterStatelessMessageType.RESPONSE_UNSUBSCRIBE_IMMEDIATE
+                    ).to_bytes(2, "big"),
                 )
-                try:
-                    await handler.on_message(message)
-                    await handler_done.wait()
-                except asyncio.CancelledError as canceled:
-                    background_exceptions.append(canceled)
-                    raise combine_multiple_exceptions(
-                        "handler canceled", background_exceptions
+
+            background_exceptions: List[BaseException] = []
+            async with self._status_handlers_lock:
+                if self.connection_status == PubSubClientConnectionStatus.LOST:
+                    self.connection_status = PubSubClientConnectionStatus.OK
+                    for _, status_handler in self.status_handlers:
+                        try:
+                            await status_handler.on_connection_established()
+                        except BaseException as e:
+                            background_exceptions.append(e)
+
+            with tempfile.SpooledTemporaryFile(
+                max_size=self.config.message_body_spool_size, mode="w+b"
+            ) as spooled_request_body:
+                read_length = 0
+                hasher = hashlib.sha512()
+                while True:
+                    chunk = await body.read(io.DEFAULT_BUFFER_SIZE)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+                    read_length += len(chunk)
+                    spooled_request_body.write(chunk)
+
+                    if read_length > message_length:
+                        break
+
+                if read_length != message_length:
+                    background_exceptions.append(Exception("incorrect message length"))
+                    return Response(
+                        status_code=400,
+                        headers={"Content-Type": "application/octet-stream"},
+                        content=int(
+                            SubscriberToBroadcasterStatelessMessageType.RESPONSE_UNSUBSCRIBE_IMMEDIATE
+                        ).to_bytes(2, "big"),
+                        background=(
+                            BackgroundTask(
+                                _raise_excs,
+                                "incorrect message length",
+                                background_exceptions,
+                            )
+                        ),
                     )
-                except BaseException as e:
-                    background_exceptions.append(e)
+
+                real_digest = hasher.digest()
+                if real_digest != expected_digest:
+                    background_exceptions.append(
+                        Exception("incorrect sha-512 repr-digest")
+                    )
+                    return Response(
+                        status_code=403,
+                        headers={"Content-Type": "application/octet-stream"},
+                        content=int(
+                            SubscriberToBroadcasterStatelessMessageType.RESPONSE_UNSUBSCRIBE_IMMEDIATE
+                        ).to_bytes(2, "big"),
+                        background=(
+                            BackgroundTask(
+                                _raise_excs,
+                                "incorrect sha-512 repr-digest",
+                                background_exceptions,
+                            )
+                        ),
+                    )
+
+                for idx, (reg_id, handler) in enumerate(tuple(self.handlers)):
+                    if len(self.handlers) <= idx or self.handlers[idx][0] != reg_id:
+                        for alt_idx in range(min(idx, len(self.handlers))):
+                            if self.handlers[alt_idx][0] == reg_id:
+                                break
+                        else:
+                            continue
+                    spooled_request_body.seek(0)
+
+                    # we want message.cleanup() not to interfere with future
+                    # handlers if called multiple times, hence we make a new event
+                    # per handler
+                    handler_done = asyncio.Event()
+
+                    async def handler_cleanup() -> None:
+                        handler_done.set()
+
+                    message = PubSubClientMessageWithCleanup(
+                        topic=topic,
+                        sha512=real_digest,
+                        data=spooled_request_body,
+                        cleanup=handler_cleanup,
+                    )
+                    try:
+                        await handler.on_message(message)
+                        await handler_done.wait()
+                    except asyncio.CancelledError as canceled:
+                        background_exceptions.append(canceled)
+                        raise combine_multiple_exceptions(
+                            "handler canceled", background_exceptions
+                        )
+                    except BaseException as e:
+                        background_exceptions.append(e)
+        finally:
+            await stream.aclose()
+
+        resp_tracing = b""  # TODO: tracing
+        num_subscribers = 1
+        resp_authorization = await self.config.authorize_confirm_receive(
+            tracing=resp_tracing,
+            identifier=identifier,
+            num_subscribers=num_subscribers,
+            url=str(request.url),
+            now=time.time(),
+        )
+        resp_authorization_bytes = (
+            b"" if resp_authorization is None else resp_authorization.encode("utf-8")
+        )
+
+        response_body = io.BytesIO()
+        response_body.write(
+            int(
+                SubscriberToBroadcasterStatelessMessageType.RESPONSE_CONFIRM_RECEIVE
+            ).to_bytes(2, "big")
+        )
+        response_body.write(len(resp_authorization_bytes).to_bytes(2, "big"))
+        response_body.write(resp_authorization_bytes)
+        response_body.write(len(resp_tracing).to_bytes(2, "big"))
+        response_body.write(resp_tracing)
+        response_body.write(len(identifier).to_bytes(1, "big"))
+        response_body.write(identifier)
+        response_body.write(num_subscribers.to_bytes(4, "big"))
         return Response(
             status_code=200,
+            headers={"Content-Type": "application/octet-stream"},
+            content=response_body.getvalue(),
             background=(
                 BackgroundTask(
                     _raise_excs,
@@ -916,42 +1061,44 @@ class HttpPubSubClientReceiver:
         self,
         request: Request,
         authorization: Annotated[Optional[str], Header()] = None,
-        x_topic: Annotated[Optional[str], Header()] = None,
     ) -> Response:
-        if x_topic is None:
-            return Response(
-                status_code=400,
-                headers={"Content-Type": "application/json; charset=utf-8"},
-                content=b'{"unsubscribe": true, "reason": "missing x-topic header"}',
-            )
-
+        stream = request.stream()
         try:
-            topic = base64.b64decode(x_topic + "==")
-        except BaseException:
-            return Response(
-                status_code=400,
-                headers={"Content-Type": "application/json; charset=utf-8"},
-                content=b'{"unsubscribe": true, "reason": "invalid x-topic header"}',
-            )
+            body = AsyncIterableAIO(stream.__aiter__())
+            tracing_length_bytes = await async_read_exact(body, 2)
+            tracing_length = int.from_bytes(tracing_length_bytes, "big")
+            tracing = await async_read_exact(body, tracing_length)
+            topic_length_bytes = await async_read_exact(body, 2)
+            topic_length = int.from_bytes(topic_length_bytes, "big")
+            topic = await async_read_exact(body, topic_length)
+        finally:
+            await stream.aclose()
 
         auth_result = await self.config.is_missed_allowed(
+            tracing=tracing,
             recovery=str(request.url),
             topic=topic,
             now=time.time(),
             authorization=authorization,
         )
-        if auth_result == "unavailable":
-            return Response(status_code=503)
-        if auth_result != "ok":
+        background_exceptions: List[BaseException] = []
+        if auth_result == AuthResult.UNAVAILABLE:
+            background_exceptions.append(Exception("auth unavailable"))
+            return Response(
+                status_code=503,
+                background=BackgroundTask(
+                    _raise_excs, "auth unavailable", background_exceptions
+                ),
+            )
+        if auth_result != AuthResult.OK:
+            background_exceptions.append(Exception(f"auth failed: {auth_result=}"))
             return Response(
                 status_code=403,
-                headers={"Content-Type": "application/json; charset=utf-8"},
-                content=b'{"unsubscribe": true, "reason": '
-                + json.dumps(auth_result).encode("utf-8")
-                + b"}",
+                background=BackgroundTask(
+                    _raise_excs, "auth failed", background_exceptions
+                ),
             )
 
-        background_exceptions: List[BaseException] = []
         async with self._status_handlers_lock:
             if self.connection_status == PubSubClientConnectionStatus.ABANDONED:
                 return Response(status_code=503)
@@ -971,8 +1118,30 @@ class HttpPubSubClientReceiver:
                 except BaseException as e:
                     background_exceptions.append(e)
 
+        resp_tracing = b""  # TODO: tracing
+        resp_authorization = await self.config.authorize_confirm_missed(
+            tracing=resp_tracing,
+            topic=topic,
+            url=str(request.url),
+            now=time.time(),
+        )
+        resp_authorization_bytes = (
+            b"" if resp_authorization is None else resp_authorization.encode("utf-8")
+        )
+        resp_body = io.BytesIO()
+        resp_body.write(
+            int(
+                SubscriberToBroadcasterStatelessMessageType.RESPONSE_CONFIRM_MISSED
+            ).to_bytes(2, "big")
+        )
+        resp_body.write(len(resp_authorization_bytes).to_bytes(2, "big"))
+        resp_body.write(resp_authorization_bytes)
+        resp_body.write(len(resp_tracing).to_bytes(2, "big"))
+        resp_body.write(resp_tracing)
         return Response(
             status_code=200,
+            headers={"Content-Type": "application/octet-stream"},
+            content=resp_body.getvalue(),
             background=(
                 BackgroundTask(
                     _raise_excs,

@@ -26,6 +26,7 @@ def check_missed(state: StateOpen, message: B2S_Missed) -> None:
         message=message,
         authorization_task=asyncio.create_task(
             state.config.is_missed_allowed(
+                tracing=message.tracing,
                 recovery=make_for_receive_websocket_url_and_change_counter(state),
                 topic=message.topic,
                 now=time.time(),

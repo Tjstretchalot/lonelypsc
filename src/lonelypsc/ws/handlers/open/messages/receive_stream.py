@@ -5,15 +5,8 @@ import tempfile
 import time
 from typing import TYPE_CHECKING
 
+from lonelypsp.auth.config import AuthResult
 from lonelypsp.stateful.constants import SubscriberToBroadcasterStatefulMessageType
-from lonelypsp.stateful.messages.confirm_receive import (
-    S2B_ConfirmReceive,
-    serialize_s2b_confirm_receive,
-)
-from lonelypsp.stateful.messages.continue_receive import (
-    S2B_ContinueReceive,
-    serialize_s2b_continue_receive,
-)
 from lonelypsp.stateful.messages.receive_stream import B2S_ReceiveStream
 
 from lonelypsc.client import PubSubError, PubSubIrrecoverableError
@@ -29,6 +22,8 @@ from lonelypsc.ws.state import (
     ReceivingIncomplete,
     ReceivingState,
     StateOpen,
+    UnsentAckConfirmReceive,
+    UnsentAckContinueReceive,
 )
 
 
@@ -64,8 +59,10 @@ def check_receive_stream(state: StateOpen, message: B2S_ReceiveStream) -> None:
             body=tempfile.SpooledTemporaryFile(max_size=spool_size),
             authorization_task=asyncio.create_task(
                 state.config.is_receive_allowed(
+                    tracing=message.tracing,
                     url=make_for_receive_websocket_url_and_change_counter(state),
                     topic=message.topic,
+                    identifier=message.identifier,
                     message_sha512=(
                         message.unverified_compressed_sha512
                         if message.compressor_id is not None
@@ -102,7 +99,7 @@ def check_receive_stream(state: StateOpen, message: B2S_ReceiveStream) -> None:
         and state.receiving.authorization_task.done()
     ):
         result = state.receiving.authorization_task.result()
-        if result != "ok":
+        if result != AuthResult.OK:
             raise PubSubError(f"authorization failed: {result}")
         state.receiving.authorization_task = None
 
@@ -124,13 +121,10 @@ def check_receive_stream(state: StateOpen, message: B2S_ReceiveStream) -> None:
 
     if received_length < expected_length:
         state.unsent_acks.append(
-            serialize_s2b_continue_receive(
-                S2B_ContinueReceive(
-                    type=SubscriberToBroadcasterStatefulMessageType.CONTINUE_RECEIVE,
-                    identifier=state.receiving.first.identifier,
-                    part_id=state.receiving.part_id,
-                ),
-                minimal_headers=state.config.websocket_minimal_headers,
+            UnsentAckContinueReceive(
+                type=SubscriberToBroadcasterStatefulMessageType.CONTINUE_RECEIVE,
+                identifier=state.receiving.first.identifier,
+                part_id=state.receiving.part_id,
             )
         )
         return
@@ -148,12 +142,9 @@ def check_receive_stream(state: StateOpen, message: B2S_ReceiveStream) -> None:
         )
 
     state.unsent_acks.append(
-        serialize_s2b_confirm_receive(
-            S2B_ConfirmReceive(
-                type=SubscriberToBroadcasterStatefulMessageType.CONFIRM_RECEIVE,
-                identifier=state.receiving.first.identifier,
-            ),
-            minimal_headers=state.config.websocket_minimal_headers,
+        UnsentAckConfirmReceive(
+            type=SubscriberToBroadcasterStatefulMessageType.CONFIRM_RECEIVE,
+            identifier=state.receiving.first.identifier,
         )
     )
 

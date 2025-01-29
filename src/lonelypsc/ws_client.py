@@ -3,12 +3,15 @@ import io
 import os
 import secrets
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import (
     TYPE_CHECKING,
+    ContextManager,
     Dict,
     Iterable,
+    Iterator,
     List,
     Literal,
     NoReturn,
@@ -32,6 +35,8 @@ from lonelypsc.client import (
     PubSubClientConnector,
     PubSubClientMessageWithCleanup,
     PubSubClientReceiver,
+    PubSubClientTracingNotifyOnHashed,
+    PubSubClientTracingNotifyStart,
     PubSubDirectConnectionStatusReceiver,
     PubSubDirectOnMessageWithCleanupReceiver,
     PubSubNotifyResult,
@@ -80,6 +85,24 @@ if sys.version_info >= (3, 11):
     from typing import Never
 else:
     from typing import NoReturn as Never
+
+
+class NoopStatelessTracingNotifyStart:
+    def on_start_without_hash(
+        self, /, *, topic: bytes, length: int, filelike: bool
+    ) -> PubSubClientTracingNotifyOnHashed[Literal[None]]:
+        return self
+
+    def on_hashed(self) -> None: ...
+
+    def on_start_with_hash(
+        self, /, *, topic: bytes, length: int, filelike: bool
+    ) -> None: ...
+
+
+@contextmanager
+def _noop_notify_tracer() -> Iterator[NoopStatelessTracingNotifyStart]:
+    yield NoopStatelessTracingNotifyStart()
 
 
 @fast_dataclass
@@ -746,6 +769,11 @@ class WSPubSubConnectorReceiver:
         """Returns a bulk subscription connector if supported, otherwise None"""
         return None
 
+    def prepare_notifier_trace(
+        self, initializer: Literal[None], /
+    ) -> ContextManager[PubSubClientTracingNotifyStart[Literal[None]]]:
+        return _noop_notify_tracer()
+
     async def notify(
         self,
         /,
@@ -754,6 +782,7 @@ class WSPubSubConnectorReceiver:
         message: SyncStandardIO,
         length: int,
         message_sha512: bytes,
+        tracer: Literal[None],
     ) -> PubSubNotifyResult:
         await self._check_errored()
         assert self.state.type == CRStateType.SETUP, "_check_errored?"

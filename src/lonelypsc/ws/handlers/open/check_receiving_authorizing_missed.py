@@ -1,3 +1,5 @@
+from lonelypsp.auth.config import AuthResult
+
 from lonelypsc.client import PubSubError
 from lonelypsc.ws.check_result import CheckResult
 from lonelypsc.ws.state import (
@@ -24,7 +26,7 @@ def check_receiving_authorizing_missed(state: StateOpen) -> CheckResult:
         return CheckResult.CONTINUE
 
     result = state.receiving.authorization_task.result()
-    if result != "ok":
+    if result != AuthResult.OK:
         raise PubSubError(f"authorization failed: {result}")
 
     state.received.put_nowait(

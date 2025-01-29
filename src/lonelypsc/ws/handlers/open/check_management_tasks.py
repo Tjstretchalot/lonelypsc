@@ -65,6 +65,8 @@ def check_management_tasks(state: StateOpen) -> CheckResult:
             B2S_ConfirmSubscribeExact(
                 type=BroadcasterToSubscriberStatefulMessageType.CONFIRM_SUBSCRIBE_EXACT,
                 topic=task.topic,
+                tracing=b"",
+                authorization=None,
             )
         )
     elif task.type == ManagementTaskType.SUBSCRIBE_GLOB:
@@ -72,6 +74,8 @@ def check_management_tasks(state: StateOpen) -> CheckResult:
             B2S_ConfirmSubscribeGlob(
                 type=BroadcasterToSubscriberStatefulMessageType.CONFIRM_SUBSCRIBE_GLOB,
                 glob=task.glob,
+                tracing=b"",
+                authorization=None,
             )
         )
     elif task.type == ManagementTaskType.UNSUBSCRIBE_EXACT:
@@ -79,6 +83,8 @@ def check_management_tasks(state: StateOpen) -> CheckResult:
             B2S_ConfirmUnsubscribeExact(
                 type=BroadcasterToSubscriberStatefulMessageType.CONFIRM_UNSUBSCRIBE_EXACT,
                 topic=task.topic,
+                tracing=b"",
+                authorization=None,
             )
         )
     elif task.type == ManagementTaskType.UNSUBSCRIBE_GLOB:
@@ -86,6 +92,8 @@ def check_management_tasks(state: StateOpen) -> CheckResult:
             B2S_ConfirmUnsubscribeGlob(
                 type=BroadcasterToSubscriberStatefulMessageType.CONFIRM_UNSUBSCRIBE_GLOB,
                 glob=task.glob,
+                authorization=None,
+                tracing=b"",
             )
         )
     else:
@@ -109,6 +117,7 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
 
     if task.type == ManagementTaskType.SUBSCRIBE_EXACT:
         authorization = await state.config.authorize_subscribe_exact(
+            tracing=b"",  # TODO: tracing
             url=url,
             recovery=None,
             exact=task.topic,
@@ -120,6 +129,7 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
                     type=SubscriberToBroadcasterStatefulMessageType.SUBSCRIBE_EXACT,
                     authorization=authorization,
                     topic=task.topic,
+                    tracing=b"",  # TODO: tracing
                 ),
                 minimal_headers=state.config.websocket_minimal_headers,
             )
@@ -128,13 +138,14 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
 
     if task.type == ManagementTaskType.SUBSCRIBE_GLOB:
         authorization = await state.config.authorize_subscribe_glob(
-            url=url, recovery=None, glob=task.glob, now=time.time()
+            tracing=b"", url=url, recovery=None, glob=task.glob, now=time.time()
         )
         await state.websocket.send_bytes(
             serialize_s2b_subscribe_glob(
                 S2B_SubscribeGlob(
                     type=SubscriberToBroadcasterStatefulMessageType.SUBSCRIBE_GLOB,
                     authorization=authorization,
+                    tracing=b"",  # TODO: traicng
                     glob=task.glob,
                 ),
                 minimal_headers=state.config.websocket_minimal_headers,
@@ -144,13 +155,14 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
 
     if task.type == ManagementTaskType.UNSUBSCRIBE_EXACT:
         authorization = await state.config.authorize_subscribe_exact(
-            url=url, recovery=None, exact=task.topic, now=time.time()
+            tracing=b"", url=url, recovery=None, exact=task.topic, now=time.time()
         )
         await state.websocket.send_bytes(
             serialize_s2b_unsubscribe_exact(
                 S2B_UnsubscribeExact(
                     type=SubscriberToBroadcasterStatefulMessageType.UNSUBSCRIBE_EXACT,
                     authorization=authorization,
+                    tracing=b"",  # TODO: tracing
                     topic=task.topic,
                 ),
                 minimal_headers=state.config.websocket_minimal_headers,
@@ -160,13 +172,14 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
 
     if task.type == ManagementTaskType.UNSUBSCRIBE_GLOB:
         authorization = await state.config.authorize_subscribe_glob(
-            url=url, recovery=None, glob=task.glob, now=time.time()
+            tracing=b"", url=url, recovery=None, glob=task.glob, now=time.time()
         )
         await state.websocket.send_bytes(
             serialize_s2b_unsubscribe_glob(
                 S2B_UnsubscribeGlob(
                     type=SubscriberToBroadcasterStatefulMessageType.UNSUBSCRIBE_GLOB,
                     authorization=authorization,
+                    tracing=b"",  # TODO: tracing
                     glob=task.glob,
                 ),
                 minimal_headers=state.config.websocket_minimal_headers,

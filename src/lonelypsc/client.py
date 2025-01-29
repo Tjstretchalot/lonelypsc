@@ -10,7 +10,9 @@ from typing import (
     TYPE_CHECKING,
     Awaitable,
     Callable,
+    ContextManager,
     Dict,
+    Generic,
     Iterable,
     List,
     Literal,
@@ -18,6 +20,7 @@ from typing import (
     Protocol,
     Set,
     Type,
+    TypeVar,
     Union,
     overload,
 )
@@ -898,7 +901,31 @@ class PubSubClientBulkSubscriptionConnector(Protocol):
         """
 
 
-class PubSubClientConnector(Protocol):
+T_contra = TypeVar("T_contra", contravariant=True)
+T_co = TypeVar("T_co", covariant=True)
+
+
+class PubSubClientTracingNotifyOnHashed(Generic[T_co], Protocol):
+    def on_hashed(self) -> T_co: ...
+
+
+class PubSubClientTracingNotifyStart(Generic[T_co], Protocol):
+    def on_start_without_hash(
+        self, /, *, topic: bytes, length: int, filelike: bool
+    ) -> PubSubClientTracingNotifyOnHashed[T_co]: ...
+
+    def on_start_with_hash(
+        self, /, *, topic: bytes, length: int, filelike: bool
+    ) -> T_co: ...
+
+
+NotifierT = TypeVar("NotifierT")
+InitializerT = TypeVar("InitializerT")
+InitializerTco = TypeVar("InitializerTco", covariant=True)
+InitializerTcontra = TypeVar("InitializerTcontra", contravariant=True)
+
+
+class PubSubClientConnector(Generic[InitializerTcontra, NotifierT], Protocol):
     """Something capable of making subscribe/unsubscribe requests"""
 
     async def setup_connector(self) -> None:
@@ -968,6 +995,11 @@ class PubSubClientConnector(Protocol):
     def get_bulk(self) -> Optional[PubSubClientBulkSubscriptionConnector]:
         """Returns a bulk subscription connector if supported, otherwise None"""
 
+    def prepare_notifier_trace(
+        self, initializer: InitializerTcontra, /
+    ) -> ContextManager[PubSubClientTracingNotifyStart[NotifierT]]:
+        """Prepares the tracing object for a notify"""
+
     async def notify(
         self,
         /,
@@ -976,6 +1008,7 @@ class PubSubClientConnector(Protocol):
         message: SyncStandardIO,
         length: int,
         message_sha512: bytes,
+        tracer: NotifierT,
     ) -> PubSubNotifyResult:
         """Sends a message, which is composed of the next length bytes on the given
         seekable synchronous io object, to all subscribers of the given topic.
@@ -989,6 +1022,7 @@ class PubSubClientConnector(Protocol):
                 via tell(), and only the next length bytes are part of the message
             length (int): the number of bytes in the message
             message_sha512 (bytes): the sha512 hash of the message (64 bytes)
+            tracing (NotifierT): the tracing object to use for this notify
         """
 
 
@@ -1106,10 +1140,10 @@ COST_PER_BULK_ITEM = 128
 """The cost per each item within a bulk request; unitless"""
 
 
-class PubSubClient:
+class PubSubClient(Generic[InitializerT, NotifierT]):
     def __init__(
         self,
-        connector: PubSubClientConnector,
+        connector: PubSubClientConnector[InitializerT, NotifierT],
         receiver: PubSubClientReceiver,
         *,
         setup: Callable[[], Awaitable[None]],
@@ -1867,7 +1901,13 @@ class PubSubClient:
 
     @overload
     async def notify(
-        self, /, *, topic: bytes, data: bytes, sha512: Optional[bytes] = None
+        self,
+        /,
+        *,
+        trace_initializer: InitializerT,
+        topic: bytes,
+        data: bytes,
+        sha512: Optional[bytes] = None,
     ) -> PubSubNotifyResult: ...
 
     @overload
@@ -1875,6 +1915,7 @@ class PubSubClient:
         self,
         /,
         *,
+        trace_initializer: InitializerT,
         topic: bytes,
         sync_file: SyncStandardIO,
         length: Optional[int] = None,
@@ -1885,6 +1926,7 @@ class PubSubClient:
         self,
         /,
         *,
+        trace_initializer: InitializerT,
         topic: bytes,
         data: Optional[bytes] = None,
         sync_file: Optional[SyncStandardIO] = None,
@@ -1914,35 +1956,53 @@ class PubSubClient:
         assert len(topic) <= 65535, "topic too long"
         assert self._entered, "not entered"
 
-        if sync_file is not None:
-            file_starts_at = sync_file.tell()
-            if length is None:
-                length = sync_file.seek(0, os.SEEK_END) - file_starts_at
-            sync_file = PositionedSyncStandardIO(sync_file, file_starts_at, length)
-            del file_starts_at
-            sync_file.seek(0, os.SEEK_SET)
-        else:
-            assert data is not None, "impossible"
-            length = len(data)
-            sync_file = BytesIO(data)
-
-        # message is used to make it clear to the type checker that either
-        # data or sync_file is set
-
-        if sha512 is None:
-            if data is not None:
-                sha512 = hashlib.sha512(data).digest()
-            else:
-                hasher = hashlib.sha512()
-                while True:
-                    chunk = sync_file.read(8192)
-                    if not chunk:
-                        break
-                    hasher.update(chunk)
-                    await asyncio.sleep(0)
-                sha512 = hasher.digest()
+        with self.connector.prepare_notifier_trace(
+            trace_initializer
+        ) as on_start_tracer:
+            if sync_file is not None:
+                file_starts_at = sync_file.tell()
+                if length is None:
+                    length = sync_file.seek(0, os.SEEK_END) - file_starts_at
+                sync_file = PositionedSyncStandardIO(sync_file, file_starts_at, length)
+                del file_starts_at
                 sync_file.seek(0, os.SEEK_SET)
+            else:
+                assert data is not None, "impossible"
+                length = len(data)
+                sync_file = BytesIO(data)
 
-        return await self.connector.notify(
-            topic=topic, message=sync_file, length=length, message_sha512=sha512
-        )
+            # message is used to make it clear to the type checker that either
+            # data or sync_file is set
+
+            if sha512 is None:
+                on_hashed_tracer = on_start_tracer.on_start_without_hash(
+                    topic=topic, length=length, filelike=data is None
+                )
+                del on_start_tracer
+
+                if data is not None:
+                    sha512 = hashlib.sha512(data).digest()
+                else:
+                    hasher = hashlib.sha512()
+                    while True:
+                        chunk = sync_file.read(8192)
+                        if not chunk:
+                            break
+                        hasher.update(chunk)
+                        await asyncio.sleep(0)
+                    sha512 = hasher.digest()
+                    sync_file.seek(0, os.SEEK_SET)
+
+                on_send_tracer = on_hashed_tracer.on_hashed()
+            else:
+                on_send_tracer = on_start_tracer.on_start_with_hash(
+                    topic=topic, length=length, filelike=data is None
+                )
+
+            return await self.connector.notify(
+                topic=topic,
+                message=sync_file,
+                length=length,
+                message_sha512=sha512,
+                tracer=on_send_tracer,
+            )

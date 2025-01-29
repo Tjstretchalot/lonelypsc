@@ -1,3 +1,5 @@
+from lonelypsp.auth.config import AuthResult
+
 from lonelypsc.client import PubSubError
 from lonelypsc.ws.check_result import CheckResult
 from lonelypsc.ws.handlers.open.handle_authorized_receive import (
@@ -19,7 +21,7 @@ def check_receiving_authorizing(state: StateOpen) -> CheckResult:
         return CheckResult.CONTINUE
 
     result = state.receiving.authorization_task.result()
-    if result != "ok":
+    if result != AuthResult.OK:
         raise PubSubError(f"authorization failed: {result}")
 
     handle_authorized_receive(state, state.receiving.first, state.receiving.body)

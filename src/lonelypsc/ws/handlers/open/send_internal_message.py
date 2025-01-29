@@ -118,8 +118,14 @@ async def send_internal_small_message_uncompressed(
 
     WARN: does not inform the message callback
     """
+    tracing = b""  # TODO: tracing
+    identifier = secrets.token_bytes(4)
     authorization = await state.config.authorize_notify(
-        topic=message.topic, message_sha512=message.sha512, now=time.time()
+        tracing=tracing,
+        topic=message.topic,
+        identifier=identifier,
+        message_sha512=message.sha512,
+        now=time.time(),
     )
 
     if (
@@ -130,6 +136,7 @@ async def send_internal_small_message_uncompressed(
             S2B_NotifyUncompressed(
                 type=SubscriberToBroadcasterStatefulMessageType.NOTIFY,
                 authorization=authorization,
+                tracing=tracing,
                 identifier=message.identifier,
                 compressor_id=None,
                 topic=message.topic,
@@ -147,6 +154,8 @@ async def send_internal_small_message_uncompressed(
                     type=BroadcasterToSubscriberStatefulMessageType.CONFIRM_NOTIFY,
                     identifier=message.identifier,
                     subscribers=-1,
+                    tracing=b"",
+                    authorization=None,
                 )
             )
             state.sent_notifications.append(message)
@@ -164,6 +173,7 @@ async def send_internal_small_message_uncompressed(
             S2B_NotifyStreamStartUncompressed(
                 type=SubscriberToBroadcasterStatefulMessageType.NOTIFY_STREAM,
                 authorization=authorization,
+                tracing=tracing,
                 identifier=message.identifier,
                 part_id=None,
                 topic=message.topic,
@@ -191,7 +201,11 @@ async def send_internal_large_message_uncompressed(
     """
     if authorization is None:
         authorization = await state.config.authorize_notify(
-            topic=message.topic, message_sha512=message.sha512, now=time.time()
+            tracing=b"",  # TODO: traicng
+            topic=message.topic,
+            identifier=message.identifier,
+            message_sha512=message.sha512,
+            now=time.time(),
         )
 
     await send_notify_stream_given_first_headers(
@@ -205,6 +219,7 @@ async def send_internal_large_message_uncompressed(
             S2B_NotifyStreamStartUncompressed(
                 type=SubscriberToBroadcasterStatefulMessageType.NOTIFY_STREAM,
                 authorization=authorization,
+                tracing=b"",  # TODO: tracing
                 identifier=message.identifier,
                 part_id=None,
                 topic=message.topic,
@@ -290,7 +305,11 @@ async def send_internal_large_message_compressed(
         compressed.seek(0, os.SEEK_SET)
         if compressed_length > spool_size:
             authorization = await state.config.authorize_notify(
-                topic=message.topic, message_sha512=compressed_sha512, now=time.time()
+                tracing=b"",  # TODO: tracing
+                topic=message.topic,
+                identifier=message.identifier,
+                message_sha512=compressed_sha512,
+                now=time.time(),
             )
             return await send_notify_stream_given_first_headers(
                 state=state,
@@ -303,6 +322,7 @@ async def send_internal_large_message_compressed(
                     S2B_NotifyStreamStartCompressed(
                         type=SubscriberToBroadcasterStatefulMessageType.NOTIFY_STREAM,
                         authorization=authorization,
+                        tracing=b"",  # TODO: tracing
                         identifier=message.identifier,
                         part_id=None,
                         topic=message.topic,
@@ -347,8 +367,13 @@ async def send_internal_small_message_compressed_with_compressed_data(
         compressed_sha512 = hashlib.sha512(compressed_data).digest()
 
     identifier = secrets.token_bytes(4)
+    tracing = b""  # TODO: tracing
     authorization = await state.config.authorize_notify(
-        topic=message.topic, message_sha512=compressed_sha512, now=time.time()
+        tracing=tracing,
+        topic=message.topic,
+        identifier=identifier,
+        message_sha512=compressed_sha512,
+        now=time.time(),
     )
 
     message_length = (
@@ -365,6 +390,7 @@ async def send_internal_small_message_compressed_with_compressed_data(
             S2B_NotifyCompressed(
                 type=SubscriberToBroadcasterStatefulMessageType.NOTIFY,
                 authorization=authorization,
+                tracing=b"",  # TODO: tracing
                 identifier=identifier,
                 compressor_id=compressor_id,
                 topic=message.topic,
@@ -383,6 +409,8 @@ async def send_internal_small_message_compressed_with_compressed_data(
                     type=BroadcasterToSubscriberStatefulMessageType.CONFIRM_NOTIFY,
                     identifier=identifier,
                     subscribers=-1,
+                    authorization=None,
+                    tracing=b"",
                 )
             )
             state.sent_notifications.append(message)
@@ -400,6 +428,7 @@ async def send_internal_small_message_compressed_with_compressed_data(
             S2B_NotifyStreamStartCompressed(
                 type=SubscriberToBroadcasterStatefulMessageType.NOTIFY_STREAM,
                 authorization=authorization,
+                tracing=b"",  # TODO: tracing
                 identifier=identifier,
                 part_id=None,
                 topic=message.topic,
@@ -461,12 +490,16 @@ async def send_notify_stream_given_first_headers(
                 type=BroadcasterToSubscriberStatefulMessageType.CONFIRM_NOTIFY,
                 identifier=identifier,
                 subscribers=-1,
+                authorization=None,
+                tracing=b"",
             )
             if is_done
             else B2S_ContinueNotify(
                 type=BroadcasterToSubscriberStatefulMessageType.CONTINUE_NOTIFY,
                 identifier=identifier,
                 part_id=part_id,
+                authorization=None,
+                tracing=b"",
             )
         )
         if part_id == 0:
@@ -478,12 +511,17 @@ async def send_notify_stream_given_first_headers(
 
         part_id += 1
         authorization = await state.config.authorize_notify(
-            topic=topic, message_sha512=sha512, now=time.time()
+            tracing=b"",
+            topic=topic,
+            identifier=identifier,
+            message_sha512=sha512,
+            now=time.time(),
         )
         headers = serialize_s2b_notify_stream(
             S2B_NotifyStreamContinuation(
                 type=SubscriberToBroadcasterStatefulMessageType.NOTIFY_STREAM,
                 authorization=authorization,
+                tracing=b"",  # TODO: tracing
                 identifier=identifier,
                 part_id=part_id,
                 payload=b"",

@@ -6,7 +6,9 @@ from typing import Any, Iterator, List, Literal, Optional, Protocol, Set, Union
 
 import aiohttp
 from aiohttp import ClientSession, ClientWebSocketResponse
+from lonelypsp.auth.config import AuthResult
 from lonelypsp.compat import fast_dataclass
+from lonelypsp.stateful.constants import SubscriberToBroadcasterStatefulMessageType
 from lonelypsp.stateful.messages.confirm_notify import B2S_ConfirmNotify
 from lonelypsp.stateful.messages.confirm_subscribe import (
     B2S_ConfirmSubscribeExact,
@@ -647,9 +649,7 @@ class ReceivingIncomplete:
     comes in. closing this file will delete the data
     """
 
-    authorization_task: Optional[
-        asyncio.Task[Literal["ok", "unauthorized", "forbidden", "unavailable"]]
-    ]
+    authorization_task: Optional[asyncio.Task[AuthResult]]
     """the task checking if the authorization on the first message is valid or None
     if the task completed, was already checked, and was "ok"
     """
@@ -667,9 +667,7 @@ class ReceivingAuthorizingMissed:
     message: B2S_Missed
     """the message that was received"""
 
-    authorization_task: asyncio.Task[
-        Literal["ok", "unauthorized", "forbidden", "unavailable"]
-    ]
+    authorization_task: asyncio.Task[AuthResult]
     """the task the subscriber is waiting on to finish checking the messages authorization"""
 
 
@@ -694,9 +692,7 @@ class ReceivingAuthorizing:
     in. closing this file will delete the data
     """
 
-    authorization_task: asyncio.Task[
-        Literal["ok", "unauthorized", "forbidden", "unavailable"]
-    ]
+    authorization_task: asyncio.Task[AuthResult]
     """the task the subscriber is waiting on to finish checking the messages authorization"""
 
 
@@ -831,6 +827,34 @@ class SendingInternalMessage:
 
 
 Sending = Union[SendingSimple, SendingManagementTask, SendingInternalMessage]
+
+
+@dataclass
+class UnsentAckContinueReceive:
+    """Request the broadcaster continue sending RECEIVE_STREAM"""
+
+    type: Literal[SubscriberToBroadcasterStatefulMessageType.CONTINUE_RECEIVE]
+    """discriminator value"""
+
+    identifier: bytes
+    """the message being received"""
+
+    part_id: int
+    """the last part id received"""
+
+
+@dataclass
+class UnsentAckConfirmReceive:
+    """Confirms receipt of a message from the broadcaster"""
+
+    type: Literal[SubscriberToBroadcasterStatefulMessageType.CONFIRM_RECEIVE]
+    """discriminator value"""
+
+    identifier: bytes
+    """the message received"""
+
+
+UnsentAck = Union[UnsentAckContinueReceive, UnsentAckConfirmReceive]
 
 
 @dataclass
@@ -1038,10 +1062,8 @@ class StateOpen:
     receive stream, so only one notification can be in this state at a time.
     """
 
-    unsent_acks: BoundedDeque[Union[bytes, bytearray]]
-    """Outgoing acknowledgements that need to be sent, in the order they need to
-    be sent, already formatted and ready for send_bytes
-    """
+    unsent_acks: BoundedDeque[UnsentAck]
+    """Outgoing acknowledgements that need to be sent"""
 
     received: DrainableAsyncioQueue[ReceivedMessage]
     """the messages that have been received from the broadcaster but not yet

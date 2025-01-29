@@ -1,6 +1,6 @@
 [project]
 name = "lonelypsc"
-version = "0.0.8"
+version = "0.0.9"
 description = "PubSub over HTTP (subscriber side)"
 readme = "README.md"
 authors = [
@@ -23,7 +23,7 @@ dependencies = [
     "fastapi>=0.115",
     "aiohttp>=3.11",
     "uvicorn>=0.32",
-    "lonelypsp>=0.0.26"
+    "lonelypsp>=0.0.40"
 ]
 
 

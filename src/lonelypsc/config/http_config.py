@@ -1,20 +1,31 @@
 from typing import (
     TYPE_CHECKING,
+    Generic,
     List,
     Literal,
     Optional,
     Protocol,
     Type,
     TypedDict,
+    TypeVar,
     Union,
 )
 
 from fastapi import APIRouter
-from lonelypsp.auth.config import AuthConfig
+from lonelypsp.auth.config import AuthConfig, AuthResult
 from lonelypsp.auth.set_subscriptions_info import SetSubscriptionsInfo
 from lonelypsp.stateful.messages.configure import S2B_Configure
 from lonelypsp.stateful.messages.confirm_configure import B2S_ConfirmConfigure
+from lonelypsp.stateful.messages.continue_notify import B2S_ContinueNotify
+from lonelypsp.stateful.messages.continue_receive import S2B_ContinueReceive
+from lonelypsp.stateful.messages.disable_zstd_custom import B2S_DisableZstdCustom
+from lonelypsp.stateful.messages.enable_zstd_custom import B2S_EnableZstdCustom
+from lonelypsp.stateful.messages.enable_zstd_preset import B2S_EnableZstdPreset
 from lonelypsp.stateless.make_strong_etag import StrongEtag
+from lonelypsp.tracing.stateless.root import (
+    InitializerTcontra,
+    StatelessTracingSubscriberRoot,
+)
 
 from lonelypsc.config.config import PubSubBroadcasterConfig
 
@@ -221,11 +232,25 @@ if TYPE_CHECKING:
     ___: Type[HttpPubSubGenericConfig] = HttpPubSubGenericConfigFromParts
 
 
+InitializerT = TypeVar("InitializerT")
+InitializerTco = TypeVar("InitializerTco", covariant=True)
+
+
+class TracingConfig(Generic[InitializerTcontra], Protocol):
+    @property
+    def tracing(self) -> StatelessTracingSubscriberRoot[InitializerTcontra]:
+        """Generates tracing objects for the various requests when given some
+        initializer data
+        """
+
+
 class HttpPubSubConfig(
     HttpPubSubBindConfig,
     HttpPubSubConnectConfig,
     HttpPubSubGenericConfig,
     AuthConfig,
+    TracingConfig[InitializerTcontra],
+    Generic[InitializerTcontra],
     Protocol,
 ):
     """Configures the library, including how we are reached, how we connect
@@ -233,7 +258,7 @@ class HttpPubSubConfig(
     """
 
 
-class HttpPubSubConfigFromParts:
+class HttpPubSubConfigFromParts(Generic[InitializerT]):
     """An implementation of HttpPubSubConfig from the various parts"""
 
     def __init__(
@@ -244,11 +269,13 @@ class HttpPubSubConfigFromParts:
         connect_config: HttpPubSubConnectConfig,
         generic_config: HttpPubSubGenericConfig,
         auth_config: AuthConfig,
+        tracing: StatelessTracingSubscriberRoot[InitializerT],
     ):
         self.bind_config = bind_config
         self.connect_config = connect_config
         self.generic_config = generic_config
         self.auth = auth_config
+        self.tracing = tracing
 
     @property
     def bind(self) -> Union[HttpPubSubBindUvicornConfig, HttpPubSubBindManualConfig]:
@@ -303,23 +330,32 @@ class HttpPubSubConfigFromParts:
         await self.auth.teardown_to_subscriber_auth()
 
     async def authorize_subscribe_exact(
-        self, /, *, url: str, recovery: Optional[str], exact: bytes, now: float
+        self,
+        /,
+        *,
+        tracing: bytes,
+        url: str,
+        recovery: Optional[str],
+        exact: bytes,
+        now: float,
     ) -> Optional[str]:
         return await self.auth.authorize_subscribe_exact(
-            url=url, recovery=recovery, exact=exact, now=now
+            tracing=tracing, url=url, recovery=recovery, exact=exact, now=now
         )
 
     async def is_subscribe_exact_allowed(
         self,
         /,
         *,
+        tracing: bytes,
         url: str,
         recovery: Optional[str],
         exact: bytes,
         now: float,
         authorization: Optional[str],
-    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+    ) -> AuthResult:
         return await self.auth.is_subscribe_exact_allowed(
+            tracing=tracing,
             url=url,
             recovery=recovery,
             exact=exact,
@@ -328,44 +364,72 @@ class HttpPubSubConfigFromParts:
         )
 
     async def authorize_subscribe_glob(
-        self, /, *, url: str, recovery: Optional[str], glob: str, now: float
+        self,
+        /,
+        *,
+        tracing: bytes,
+        url: str,
+        recovery: Optional[str],
+        glob: str,
+        now: float,
     ) -> Optional[str]:
         return await self.auth.authorize_subscribe_glob(
-            url=url, recovery=recovery, glob=glob, now=now
+            tracing=tracing, url=url, recovery=recovery, glob=glob, now=now
         )
 
     async def is_subscribe_glob_allowed(
         self,
         /,
         *,
+        tracing: bytes,
         url: str,
         recovery: Optional[str],
         glob: str,
         now: float,
         authorization: Optional[str],
-    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+    ) -> AuthResult:
         return await self.auth.is_subscribe_glob_allowed(
-            url=url, recovery=recovery, glob=glob, now=now, authorization=authorization
+            tracing=tracing,
+            url=url,
+            recovery=recovery,
+            glob=glob,
+            now=now,
+            authorization=authorization,
         )
 
     async def authorize_notify(
-        self, /, *, topic: bytes, message_sha512: bytes, now: float
+        self,
+        /,
+        *,
+        tracing: bytes,
+        topic: bytes,
+        identifier: bytes,
+        message_sha512: bytes,
+        now: float,
     ) -> Optional[str]:
         return await self.auth.authorize_notify(
-            topic=topic, message_sha512=message_sha512, now=now
+            tracing=tracing,
+            topic=topic,
+            identifier=identifier,
+            message_sha512=message_sha512,
+            now=now,
         )
 
     async def is_notify_allowed(
         self,
         /,
         *,
+        tracing: bytes,
         topic: bytes,
+        identifier: bytes,
         message_sha512: bytes,
         now: float,
         authorization: Optional[str],
-    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+    ) -> AuthResult:
         return await self.auth.is_notify_allowed(
+            tracing=tracing,
             topic=topic,
+            identifier=identifier,
             message_sha512=message_sha512,
             now=now,
             authorization=authorization,
@@ -375,12 +439,14 @@ class HttpPubSubConfigFromParts:
         self,
         /,
         *,
+        tracing: bytes,
         subscriber_nonce: bytes,
         enable_zstd: bool,
         enable_training: bool,
         initial_dict: int,
     ) -> Optional[str]:
         return await self.auth.authorize_stateful_configure(
+            tracing=tracing,
             subscriber_nonce=subscriber_nonce,
             enable_zstd=enable_zstd,
             enable_training=enable_training,
@@ -389,39 +455,43 @@ class HttpPubSubConfigFromParts:
 
     async def is_stateful_configure_allowed(
         self, /, *, message: S2B_Configure, now: float
-    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+    ) -> AuthResult:
         return await self.auth.is_stateful_configure_allowed(message=message, now=now)
 
     async def authorize_check_subscriptions(
-        self, /, *, url: str, now: float
+        self, /, *, tracing: bytes, url: str, now: float
     ) -> Optional[str]:
-        return await self.auth.authorize_check_subscriptions(url=url, now=now)
+        return await self.auth.authorize_check_subscriptions(
+            tracing=tracing, url=url, now=now
+        )
 
     async def is_check_subscriptions_allowed(
-        self, /, *, url: str, now: float, authorization: Optional[str]
-    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+        self, /, *, tracing: bytes, url: str, now: float, authorization: Optional[str]
+    ) -> AuthResult:
         return await self.auth.is_check_subscriptions_allowed(
-            url=url, now=now, authorization=authorization
+            tracing=tracing, url=url, now=now, authorization=authorization
         )
 
     async def authorize_set_subscriptions(
-        self, /, *, url: str, strong_etag: StrongEtag, now: float
+        self, /, *, tracing: bytes, url: str, strong_etag: StrongEtag, now: float
     ) -> Optional[str]:
         return await self.auth.authorize_set_subscriptions(
-            url=url, strong_etag=strong_etag, now=now
+            tracing=tracing, url=url, strong_etag=strong_etag, now=now
         )
 
     async def is_set_subscriptions_allowed(
         self,
         /,
         *,
+        tracing: bytes,
         url: str,
         strong_etag: StrongEtag,
         subscriptions: SetSubscriptionsInfo,
         now: float,
         authorization: Optional[str],
-    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+    ) -> AuthResult:
         return await self.auth.is_set_subscriptions_allowed(
+            tracing=tracing,
             url=url,
             strong_etag=strong_etag,
             subscriptions=subscriptions,
@@ -429,60 +499,416 @@ class HttpPubSubConfigFromParts:
             authorization=authorization,
         )
 
+    async def authorize_stateful_continue_receive(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        identifier: bytes,
+        part_id: int,
+        url: str,
+        now: float,
+    ) -> Optional[str]:
+        return await self.auth.authorize_stateful_continue_receive(
+            tracing=tracing, identifier=identifier, part_id=part_id, url=url, now=now
+        )
+
+    async def is_stateful_continue_receive_allowed(
+        self, /, *, url: str, message: S2B_ContinueReceive, now: float
+    ) -> AuthResult:
+        return await self.auth.is_stateful_continue_receive_allowed(
+            url=url, message=message, now=now
+        )
+
+    async def authorize_confirm_receive(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        identifier: bytes,
+        num_subscribers: int,
+        url: str,
+        now: float,
+    ) -> Optional[str]:
+        return await self.auth.authorize_confirm_receive(
+            tracing=tracing,
+            identifier=identifier,
+            num_subscribers=num_subscribers,
+            url=url,
+            now=now,
+        )
+
+    async def is_confirm_receive_allowed(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        identifier: bytes,
+        num_subscribers: int,
+        url: str,
+        now: float,
+        authorization: Optional[str],
+    ) -> AuthResult:
+        return await self.auth.is_confirm_receive_allowed(
+            tracing=tracing,
+            identifier=identifier,
+            num_subscribers=num_subscribers,
+            url=url,
+            now=now,
+            authorization=authorization,
+        )
+
+    async def authorize_confirm_missed(
+        self, /, *, tracing: bytes, topic: bytes, url: str, now: float
+    ) -> Optional[str]:
+        return await self.auth.authorize_confirm_missed(
+            tracing=tracing, topic=topic, url=url, now=now
+        )
+
+    async def is_confirm_missed_allowed(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        topic: bytes,
+        url: str,
+        now: float,
+        authorization: Optional[str],
+    ) -> AuthResult:
+        return await self.auth.is_confirm_missed_allowed(
+            tracing=tracing, topic=topic, url=url, now=now, authorization=authorization
+        )
+
     async def authorize_receive(
-        self, /, *, url: str, topic: bytes, message_sha512: bytes, now: float
+        self,
+        /,
+        *,
+        tracing: bytes,
+        url: str,
+        topic: bytes,
+        message_sha512: bytes,
+        identifier: bytes,
+        now: float,
     ) -> Optional[str]:
         return await self.auth.authorize_receive(
-            url=url, topic=topic, message_sha512=message_sha512, now=now
+            tracing=tracing,
+            url=url,
+            topic=topic,
+            message_sha512=message_sha512,
+            identifier=identifier,
+            now=now,
         )
 
     async def is_receive_allowed(
         self,
         /,
         *,
+        tracing: bytes,
         url: str,
         topic: bytes,
         message_sha512: bytes,
+        identifier: bytes,
         now: float,
         authorization: Optional[str],
-    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+    ) -> AuthResult:
         return await self.auth.is_receive_allowed(
+            tracing=tracing,
             url=url,
             topic=topic,
             message_sha512=message_sha512,
+            identifier=identifier,
             now=now,
             authorization=authorization,
         )
 
     async def authorize_missed(
-        self, /, *, recovery: str, topic: bytes, now: float
+        self, /, *, tracing: bytes, recovery: str, topic: bytes, now: float
     ) -> Optional[str]:
-        return await self.auth.authorize_missed(recovery=recovery, topic=topic, now=now)
+        return await self.auth.authorize_missed(
+            tracing=tracing, recovery=recovery, topic=topic, now=now
+        )
 
     async def is_missed_allowed(
         self,
         /,
         *,
+        tracing: bytes,
         recovery: str,
         topic: bytes,
         now: float,
         authorization: Optional[str],
-    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+    ) -> AuthResult:
         return await self.auth.is_missed_allowed(
-            recovery=recovery, topic=topic, now=now, authorization=authorization
+            tracing=tracing,
+            recovery=recovery,
+            topic=topic,
+            now=now,
+            authorization=authorization,
+        )
+
+    async def authorize_confirm_subscribe_exact(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        url: str,
+        recovery: Optional[str],
+        exact: bytes,
+        now: float,
+    ) -> Optional[str]:
+        return await self.auth.authorize_confirm_subscribe_exact(
+            tracing=tracing, url=url, recovery=recovery, exact=exact, now=now
+        )
+
+    async def is_confirm_subscribe_exact_allowed(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        url: str,
+        recovery: Optional[str],
+        exact: bytes,
+        now: float,
+        authorization: Optional[str],
+    ) -> AuthResult:
+        return await self.auth.is_confirm_subscribe_exact_allowed(
+            tracing=tracing,
+            url=url,
+            recovery=recovery,
+            exact=exact,
+            now=now,
+            authorization=authorization,
+        )
+
+    async def authorize_confirm_subscribe_glob(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        url: str,
+        recovery: Optional[str],
+        glob: str,
+        now: float,
+    ) -> Optional[str]:
+        return await self.auth.authorize_confirm_subscribe_glob(
+            tracing=tracing, url=url, recovery=recovery, glob=glob, now=now
+        )
+
+    async def is_confirm_subscribe_glob_allowed(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        url: str,
+        recovery: Optional[str],
+        glob: str,
+        now: float,
+        authorization: Optional[str],
+    ) -> AuthResult:
+        return await self.auth.is_confirm_subscribe_glob_allowed(
+            tracing=tracing,
+            url=url,
+            recovery=recovery,
+            glob=glob,
+            now=now,
+            authorization=authorization,
+        )
+
+    async def authorize_confirm_notify(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        identifier: bytes,
+        subscribers: int,
+        topic: bytes,
+        message_sha512: bytes,
+        now: float,
+    ) -> Optional[str]:
+        return await self.auth.authorize_confirm_notify(
+            tracing=tracing,
+            identifier=identifier,
+            subscribers=subscribers,
+            topic=topic,
+            message_sha512=message_sha512,
+            now=now,
+        )
+
+    async def is_confirm_notify_allowed(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        identifier: bytes,
+        subscribers: int,
+        topic: bytes,
+        message_sha512: bytes,
+        authorization: Optional[str],
+        now: float,
+    ) -> AuthResult:
+        return await self.auth.is_confirm_notify_allowed(
+            tracing=tracing,
+            identifier=identifier,
+            subscribers=subscribers,
+            topic=topic,
+            message_sha512=message_sha512,
+            authorization=authorization,
+            now=now,
+        )
+
+    async def authorize_check_subscriptions_response(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        strong_etag: StrongEtag,
+        now: float,
+    ) -> Optional[str]:
+        return await self.auth.authorize_check_subscriptions_response(
+            tracing=tracing, strong_etag=strong_etag, now=now
+        )
+
+    async def is_check_subscription_response_allowed(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        strong_etag: StrongEtag,
+        authorization: Optional[str],
+        now: float,
+    ) -> AuthResult:
+        return await self.auth.is_check_subscription_response_allowed(
+            tracing=tracing,
+            strong_etag=strong_etag,
+            authorization=authorization,
+            now=now,
+        )
+
+    async def authorize_set_subscriptions_response(
+        self, /, *, tracing: bytes, strong_etag: StrongEtag, now: float
+    ) -> Optional[str]:
+        return await self.auth.authorize_set_subscriptions_response(
+            tracing=tracing, strong_etag=strong_etag, now=now
+        )
+
+    async def is_set_subscription_response_allowed(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        strong_etag: StrongEtag,
+        authorization: Optional[str],
+        now: float,
+    ) -> AuthResult:
+        return await self.auth.is_set_subscription_response_allowed(
+            tracing=tracing,
+            strong_etag=strong_etag,
+            authorization=authorization,
+            now=now,
         )
 
     async def authorize_stateful_confirm_configure(
-        self, /, *, broadcaster_nonce: bytes, now: float
+        self, /, *, broadcaster_nonce: bytes, tracing: bytes, now: float
     ) -> Optional[str]:
         return await self.auth.authorize_stateful_confirm_configure(
-            broadcaster_nonce=broadcaster_nonce, now=now
+            broadcaster_nonce=broadcaster_nonce, tracing=tracing, now=now
         )
 
     async def is_stateful_confirm_configure_allowed(
         self, /, *, message: B2S_ConfirmConfigure, now: float
-    ) -> Literal["ok", "unauthorized", "forbidden", "unavailable"]:
+    ) -> AuthResult:
         return await self.auth.is_stateful_confirm_configure_allowed(
+            message=message, now=now
+        )
+
+    async def authorize_stateful_enable_zstd_preset(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        url: str,
+        compressor_identifier: int,
+        compression_level: int,
+        min_size: int,
+        max_size: int,
+        now: float,
+    ) -> Optional[str]:
+        return await self.auth.authorize_stateful_enable_zstd_preset(
+            tracing=tracing,
+            url=url,
+            compressor_identifier=compressor_identifier,
+            compression_level=compression_level,
+            min_size=min_size,
+            max_size=max_size,
+            now=now,
+        )
+
+    async def is_stateful_enable_zstd_preset_allowed(
+        self, /, *, url: str, message: B2S_EnableZstdPreset, now: float
+    ) -> AuthResult:
+        return await self.auth.is_stateful_enable_zstd_preset_allowed(
+            url=url, message=message, now=now
+        )
+
+    async def authorize_stateful_enable_zstd_custom(
+        self,
+        /,
+        *,
+        tracing: bytes,
+        url: str,
+        compressor_identifier: int,
+        compression_level: int,
+        min_size: int,
+        max_size: int,
+        sha512: bytes,
+        now: float,
+    ) -> Optional[str]:
+        return await self.auth.authorize_stateful_enable_zstd_custom(
+            tracing=tracing,
+            url=url,
+            compressor_identifier=compressor_identifier,
+            compression_level=compression_level,
+            min_size=min_size,
+            max_size=max_size,
+            sha512=sha512,
+            now=now,
+        )
+
+    async def is_stateful_enable_zstd_custom_allowed(
+        self, /, *, url: str, message: B2S_EnableZstdCustom, now: float
+    ) -> AuthResult:
+        return await self.auth.is_stateful_enable_zstd_custom_allowed(
+            url=url, message=message, now=now
+        )
+
+    async def authorize_stateful_disable_zstd_custom(
+        self, /, *, tracing: bytes, compressor_identifier: int, url: str, now: float
+    ) -> Optional[str]:
+        return await self.auth.authorize_stateful_disable_zstd_custom(
+            tracing=tracing,
+            compressor_identifier=compressor_identifier,
+            url=url,
+            now=now,
+        )
+
+    async def is_stateful_disable_zstd_custom_allowed(
+        self, /, *, url: str, message: B2S_DisableZstdCustom, now: float
+    ) -> AuthResult:
+        return await self.auth.is_stateful_disable_zstd_custom_allowed(
+            url=url, message=message, now=now
+        )
+
+    async def authorize_stateful_continue_notify(
+        self, /, *, tracing: bytes, identifier: bytes, part_id: int, now: float
+    ) -> Optional[str]:
+        return await self.auth.authorize_stateful_continue_notify(
+            tracing=tracing, identifier=identifier, part_id=part_id, now=now
+        )
+
+    async def is_stateful_continue_notify_allowed(
+        self, /, *, message: B2S_ContinueNotify, now: float
+    ) -> AuthResult:
+        return await self.auth.is_stateful_continue_notify_allowed(
             message=message, now=now
         )
 
@@ -504,7 +930,8 @@ def make_http_pub_sub_config(
     outgoing_http_timeout_sock_connect: Optional[float],
     outgoing_retry_ambiguous: bool,
     auth: AuthConfig,
-) -> HttpPubSubConfig:
+    tracing: StatelessTracingSubscriberRoot[InitializerT],
+) -> HttpPubSubConfig[InitializerT]:
     """Convenience function to make a HttpPubSubConfig object without excessive nesting
     if you are specifying everything that doesn't need to be synced with the broadcaster
     within code.
@@ -524,4 +951,5 @@ def make_http_pub_sub_config(
             outgoing_retry_ambiguous=outgoing_retry_ambiguous,
         ),
         auth_config=auth,
+        tracing=tracing,
     )
