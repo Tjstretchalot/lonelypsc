@@ -15,6 +15,7 @@ from lonelypsp.tracing.stateless.notify import (
 
 from lonelypsc.config.config import PubSubBroadcasterConfig
 from lonelypsc.config.http_config import HttpPubSubConfig
+from lonelypsc.http.notify.result import HttpPubSubNotifyResult
 from lonelypsc.http.retrier import (
     BroadcasterRetryableAction,
     BroadcasterRetryableActionResult,
@@ -23,7 +24,6 @@ from lonelypsc.http.retrier import (
     BroadcasterRetryableActionResultSuccess,
     BroadcasterRetryableActionRetryFollowup,
 )
-from lonelypsc.http_client import HttpPubSubNotifyResult
 from lonelypsc.util.async_io import async_read_exact
 from lonelypsc.util.io_helpers import (
     PositionedSyncStandardIO,

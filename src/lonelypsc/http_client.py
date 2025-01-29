@@ -5,7 +5,6 @@ import io
 import random
 import tempfile
 import time
-from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -57,7 +56,6 @@ from lonelypsc.client import (
     PubSubClientTracingNotifyStart,
     PubSubDirectConnectionStatusReceiver,
     PubSubDirectOnMessageWithCleanupReceiver,
-    PubSubNotifyResult,
     PubSubRequestAmbiguousError,
     PubSubRequestError,
     PubSubRequestRefusedError,
@@ -79,6 +77,9 @@ from lonelypsc.util.io_helpers import (
 )
 from lonelypsc.util.request_body_io import AsyncIterableAIO
 
+if TYPE_CHECKING:
+    from lonelypsc.http.notify.result import HttpPubSubNotifyResult
+
 T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
 InitializerT = TypeVar("InitializerT")
@@ -87,15 +88,6 @@ InitializerT = TypeVar("InitializerT")
 class _BroadcasterCallable(Protocol[T_co]):
     async def __call__(self, /, *, broadcaster: PubSubBroadcasterConfig) -> T_co:
         raise NotImplementedError
-
-
-@dataclass
-class HttpPubSubNotifyResult:
-    notified: int
-
-
-if TYPE_CHECKING:
-    _: Type[PubSubNotifyResult] = HttpPubSubNotifyResult
 
 
 class HttpPubSubClientConnector(Generic[InitializerT]):
