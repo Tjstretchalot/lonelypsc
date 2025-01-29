@@ -45,7 +45,6 @@ from lonelypsc.client import (
 )
 from lonelypsc.config.config import BroadcastersShuffler
 from lonelypsc.config.ws_config import WebsocketPubSubConfig
-from lonelypsc.http_client import HttpPubSubNotifyResult
 from lonelypsc.types.sync_io import (
     SyncStandardIO,
 )
@@ -986,6 +985,5 @@ def _assert_never(_: Never) -> NoReturn:
 
 
 if TYPE_CHECKING:
-    _: Type[PubSubNotifyResult] = HttpPubSubNotifyResult
     __: Type[PubSubClientConnector] = WSPubSubConnectorReceiver
     ___: Type[PubSubClientReceiver] = WSPubSubConnectorReceiver
