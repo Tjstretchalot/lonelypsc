@@ -10,6 +10,7 @@ from lonelypsp.stateful.messages.confirm_configure import B2S_ConfirmConfigurePa
 from lonelypsp.stateful.parser_helpers import parse_b2s_message_prefix
 from lonelypsp.util.bounded_deque import BoundedDeque
 from lonelypsp.util.drainable_asyncio_queue import DrainableAsyncioQueue
+from lonelypsp.auth.config import AuthResult
 
 from lonelypsc.client import (
     PubSubCancelRequested,
@@ -132,7 +133,7 @@ async def _check_read_task(state: StateConfiguring) -> CheckStateChangerResult:
     auth_result = await state.config.is_stateful_confirm_configure_allowed(
         message=parsed_message, now=time.time()
     )
-    if auth_result != "ok":
+    if auth_result != AuthResult.OK:
         raise PubSubError(f"confirm configure authorization failed: {auth_result}")
 
     connection_nonce = hashlib.sha256(
