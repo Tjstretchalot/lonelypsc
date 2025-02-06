@@ -124,8 +124,7 @@ async def attempt_broadcasters(
             next_retry = result.followup
             next_action = None
 
-    if next_action is None:
+    if next_retry is None:
         raise Exception("no broadcasters to try!")
 
-    assert next_retry is not None
     return await next_retry.on_retries_exhausted()
