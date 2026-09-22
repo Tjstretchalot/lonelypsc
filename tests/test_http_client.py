@@ -9,6 +9,7 @@ from lonelypsp.stateless.make_strong_etag import (
     make_strong_etag,
 )
 
+from lonelypsc.config.http_config import HttpPubSubGenericConfigFromParts
 from lonelypsc.http_client import HttpPubSubClientConnector
 
 
@@ -76,6 +77,12 @@ async def _check_response_authorization() -> None:
 
 def test_check_subscription_response_authorization_is_awaited() -> None:
     asyncio.run(_check_response_authorization())
+
+
+def test_generic_config_defaults_resubscribe_interval() -> None:
+    config = HttpPubSubGenericConfigFromParts(1, None, None, None, None, True)
+
+    assert config.resubscribe_interval == 300.0
 
 
 async def _resubscribe_repairs_outdated_subscriptions() -> None:

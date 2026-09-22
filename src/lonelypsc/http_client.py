@@ -131,9 +131,8 @@ class HttpPubSubClientConnector(Generic[InitializerT]):
         self._session = sess
         self._shuffler = BroadcastersShuffler(self.config.broadcasters)
 
-        if not math.isfinite(self.config.resubscribe_interval) or (
-            self.config.resubscribe_interval <= 0
-        ):
+        resubscribe_interval = self.config.resubscribe_interval
+        if not math.isfinite(resubscribe_interval) or resubscribe_interval <= 0:
             await sess.__aexit__(None, None, None)
             self._session = None
             self._shuffler = None
@@ -159,8 +158,9 @@ class HttpPubSubClientConnector(Generic[InitializerT]):
         return None
 
     async def _resubscribe_loop(self) -> None:
+        resubscribe_interval = self.config.resubscribe_interval
         while True:
-            await asyncio.sleep(self.config.resubscribe_interval)
+            await asyncio.sleep(resubscribe_interval)
             try:
                 await self._check_and_resubscribe()
             except asyncio.CancelledError:
