@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any, Coroutine, cast
 
 import aiohttp
 
@@ -20,15 +21,20 @@ def make_websocket_connect_task(
         client_session (aiohttp.ClientSession): the session to use for the connection
     """
     return asyncio.create_task(
-        client_session.ws_connect(
-            broadcaster["host"] + "/v1/websocket",
-            # WARN: do not use ClientWSTimeout ws_receive, which will ignore
-            # heartbeats, meaning it will timeout unless there are actual
-            # notify/subscribe messages being sent. the heartbeat interval
-            # is acting as our receive timeout
-            timeout=aiohttp.ClientWSTimeout(
-                ws_receive=None, ws_close=config.websocket_close_timeout
+        cast(
+            # aiohttp omits the decode_text=True overload on Python 3.10.
+            Coroutine[Any, Any, aiohttp.ClientWebSocketResponse],
+            client_session.ws_connect(
+                broadcaster["host"] + "/v1/websocket",
+                # WARN: do not use ClientWSTimeout ws_receive, which will ignore
+                # heartbeats, meaning it will timeout unless there are actual
+                # notify/subscribe messages being sent. the heartbeat interval
+                # is acting as our receive timeout
+                timeout=aiohttp.ClientWSTimeout(
+                    ws_receive=None, ws_close=config.websocket_close_timeout
+                ),
+                heartbeat=config.websocket_heartbeat_interval,
+                decode_text=True,
             ),
-            heartbeat=config.websocket_heartbeat_interval,
         )
     )
