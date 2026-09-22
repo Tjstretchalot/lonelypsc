@@ -26,6 +26,7 @@ from lonelypsp.stateful.messages.notify_stream import (
 from lonelypsp.stateful.parser_helpers import read_exact
 
 from lonelypsc.types.sync_io import SyncReadableBytesIO
+from lonelypsc.util.websocket import send_bytes_like
 from lonelypsc.ws.compressor import CompressorReady, CompressorState
 from lonelypsc.ws.handlers.open.compressor_utils import reserve_compressor
 from lonelypsc.ws.internal_callbacks import (
@@ -158,7 +159,7 @@ async def send_internal_small_message_uncompressed(
                 )
             )
             state.sent_notifications.append(message)
-            await state.websocket.send_bytes(as_simple_message)
+            await send_bytes_like(state.websocket, as_simple_message)
             return
 
     await send_notify_stream_given_first_headers(
@@ -412,7 +413,7 @@ async def send_internal_small_message_compressed_with_compressed_data(
                 )
             )
             state.sent_notifications.append(message)
-            await state.websocket.send_bytes(as_simple_message)
+            await send_bytes_like(state.websocket, as_simple_message)
             return
 
     await send_notify_stream_given_first_headers(
@@ -449,7 +450,7 @@ async def send_notify_stream_given_first_headers(
     identifier: bytes,
     topic: bytes,
     sha512: bytes,
-    first_headers: bytes,
+    first_headers: Union[bytes, bytearray],
     msg: InternalMessage,
 ) -> None:
     """Sends the given stream of data to the broadcaster via potentiially multiple
@@ -502,7 +503,7 @@ async def send_notify_stream_given_first_headers(
         )
         if part_id == 0:
             state.sent_notifications.append(msg)
-        await state.websocket.send_bytes(headers + payload)
+        await send_bytes_like(state.websocket, headers + payload)
 
         if is_done:
             return

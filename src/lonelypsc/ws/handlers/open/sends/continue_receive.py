@@ -6,6 +6,7 @@ from lonelypsp.stateful.messages.continue_receive import (
     serialize_s2b_continue_receive,
 )
 
+from lonelypsc.util.websocket import send_bytes_like
 from lonelypsc.ws.handlers.open.websocket_url import (
     make_for_send_websocket_url_and_change_counter,
 )
@@ -36,4 +37,4 @@ async def send_continue_receive(
         ),
         minimal_headers=state.config.websocket_minimal_headers,
     )
-    await state.websocket.send_bytes(serd_message)
+    await send_bytes_like(state.websocket, serd_message)

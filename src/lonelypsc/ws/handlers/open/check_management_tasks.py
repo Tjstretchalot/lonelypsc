@@ -26,6 +26,7 @@ from lonelypsp.stateful.messages.unsubscribe import (
     serialize_s2b_unsubscribe_glob,
 )
 
+from lonelypsc.util.websocket import send_bytes_like
 from lonelypsc.ws.check_result import CheckResult
 from lonelypsc.ws.handlers.open.websocket_url import (
     make_for_send_websocket_url_and_change_counter,
@@ -123,7 +124,8 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
             exact=task.topic,
             now=time.time(),
         )
-        await state.websocket.send_bytes(
+        await send_bytes_like(
+            state.websocket,
             serialize_s2b_subscribe_exact(
                 S2B_SubscribeExact(
                     type=SubscriberToBroadcasterStatefulMessageType.SUBSCRIBE_EXACT,
@@ -132,7 +134,7 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
                     tracing=b"",  # TODO: tracing
                 ),
                 minimal_headers=state.config.websocket_minimal_headers,
-            )
+            ),
         )
         return
 
@@ -140,7 +142,8 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
         authorization = await state.config.authorize_subscribe_glob(
             tracing=b"", url=url, recovery=None, glob=task.glob, now=time.time()
         )
-        await state.websocket.send_bytes(
+        await send_bytes_like(
+            state.websocket,
             serialize_s2b_subscribe_glob(
                 S2B_SubscribeGlob(
                     type=SubscriberToBroadcasterStatefulMessageType.SUBSCRIBE_GLOB,
@@ -149,7 +152,7 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
                     glob=task.glob,
                 ),
                 minimal_headers=state.config.websocket_minimal_headers,
-            )
+            ),
         )
         return
 
@@ -157,7 +160,8 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
         authorization = await state.config.authorize_subscribe_exact(
             tracing=b"", url=url, recovery=None, exact=task.topic, now=time.time()
         )
-        await state.websocket.send_bytes(
+        await send_bytes_like(
+            state.websocket,
             serialize_s2b_unsubscribe_exact(
                 S2B_UnsubscribeExact(
                     type=SubscriberToBroadcasterStatefulMessageType.UNSUBSCRIBE_EXACT,
@@ -166,7 +170,7 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
                     topic=task.topic,
                 ),
                 minimal_headers=state.config.websocket_minimal_headers,
-            )
+            ),
         )
         return
 
@@ -174,7 +178,8 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
         authorization = await state.config.authorize_subscribe_glob(
             tracing=b"", url=url, recovery=None, glob=task.glob, now=time.time()
         )
-        await state.websocket.send_bytes(
+        await send_bytes_like(
+            state.websocket,
             serialize_s2b_unsubscribe_glob(
                 S2B_UnsubscribeGlob(
                     type=SubscriberToBroadcasterStatefulMessageType.UNSUBSCRIBE_GLOB,
@@ -183,7 +188,7 @@ async def send_management_task(state: StateOpen, task: ManagementTask) -> None:
                     glob=task.glob,
                 ),
                 minimal_headers=state.config.websocket_minimal_headers,
-            )
+            ),
         )
         return
 

@@ -36,13 +36,14 @@ def _decompress(
     try:
         decompressed = tempfile.SpooledTemporaryFile(max_size=spool_size)
         try:
-            with DecompressorReservation(
-                compressor,
-                max_window_size=decompression_max_window_size,
-                max_decompressors=5,
-            ) as decompressor, decompressor.stream_reader(
-                cast(IO[bytes], compressed_body)
-            ) as reader:
+            with (
+                DecompressorReservation(
+                    compressor,
+                    max_window_size=decompression_max_window_size,
+                    max_decompressors=5,
+                ) as decompressor,
+                decompressor.stream_reader(cast(IO[bytes], compressed_body)) as reader,
+            ):
                 read_so_far = 0
                 hasher = hashlib.sha512()
                 while True:

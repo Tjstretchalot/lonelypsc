@@ -16,11 +16,7 @@ the terminology, see the server repository.
 ## Installation
 
 ```bash
-python -m venv venv
-source venv/bin/activate
-python -m pip install -U pip
-pip install lonelypsc[standard]
-pip freeze > requirements.txt
+uv sync --extra standard
 ```
 
 ## Usage

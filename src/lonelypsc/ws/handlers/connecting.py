@@ -7,6 +7,7 @@ from lonelypsp.stateful.messages.configure import S2B_Configure, serialize_s2b_c
 
 from lonelypsc.client import PubSubCancelRequested, PubSubIrrecoverableError
 from lonelypsc.util.errors import combine_multiple_exceptions
+from lonelypsc.util.websocket import send_bytes_like
 from lonelypsc.ws.check_result import (
     CheckResult,
     CheckStateChangerResult,
@@ -182,7 +183,8 @@ async def _check_websocket(state: StateConnecting) -> CheckStateChangerResult:
             tasks=state.tasks,
             subscriber_nonce=subscriber_nonce,
             send_task=asyncio.create_task(
-                websocket.send_bytes(
+                send_bytes_like(
+                    websocket,
                     serialize_s2b_configure(
                         S2B_Configure(
                             type=SubscriberToBroadcasterStatefulMessageType.CONFIGURE,
@@ -194,7 +196,7 @@ async def _check_websocket(state: StateConnecting) -> CheckStateChangerResult:
                             tracing=tracing,
                         ),
                         minimal_headers=state.config.websocket_minimal_headers,
-                    )
+                    ),
                 )
             ),
             read_task=make_websocket_read_task(websocket),
