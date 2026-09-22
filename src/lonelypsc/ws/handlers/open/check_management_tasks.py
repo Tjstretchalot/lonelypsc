@@ -26,6 +26,7 @@ from lonelypsp.stateful.messages.unsubscribe import (
     serialize_s2b_unsubscribe_glob,
 )
 
+from lonelypsc.util.task import create_task
 from lonelypsc.util.websocket import send_bytes_like
 from lonelypsc.ws.check_result import CheckResult
 from lonelypsc.ws.handlers.open.websocket_url import (
@@ -103,7 +104,7 @@ def check_management_tasks(state: StateOpen) -> CheckResult:
     state.sending = SendingManagementTask(
         type=SendingState.MANAGEMENT_TASK,
         management_task=task,
-        task=asyncio.create_task(send_management_task(state, task)),
+        task=create_task(send_management_task(state, task)),
     )
     return CheckResult.RESTART
 

@@ -1,4 +1,3 @@
-import asyncio
 import time
 from typing import TYPE_CHECKING
 
@@ -6,6 +5,7 @@ from lonelypsp.auth.config import AuthResult
 from lonelypsp.stateful.messages.disable_zstd_custom import B2S_DisableZstdCustom
 
 from lonelypsc.client import PubSubError
+from lonelypsc.util.task import create_task
 from lonelypsc.ws.handlers.open.messages.protocol import MessageChecker
 from lonelypsc.ws.handlers.open.websocket_url import (
     make_for_receive_websocket_url_and_change_counter,
@@ -38,7 +38,7 @@ def check_disable_zstd_custom(state: StateOpen, message: B2S_DisableZstdCustom) 
     assert state.receiving is None, "already have receiving task"
     state.receiving = ReceivingAuthorizingSimple(
         type=ReceivingState.AUTHORIZING_SIMPLE,
-        task=asyncio.create_task(_target(state, message)),
+        task=create_task(_target(state, message)),
     )
 
 

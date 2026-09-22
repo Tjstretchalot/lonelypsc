@@ -50,6 +50,7 @@ from lonelypsc.types.sync_io import (
 )
 from lonelypsc.util.errors import combine_multiple_exceptions
 from lonelypsc.util.io_helpers import PositionedSyncStandardIO
+from lonelypsc.util.task import TaskHandle, create_task
 from lonelypsc.ws.handlers.handler import handle_any
 from lonelypsc.ws.state import (
     ClosingRetryInformationType,
@@ -201,7 +202,7 @@ class CRStateSetup:
     safe
     """
 
-    state_task: asyncio.Task[None]
+    state_task: TaskHandle[None]
     """the task that is mutating ws_state"""
 
 
@@ -310,9 +311,9 @@ class WSPubSubConnectorReceiver:
                 ),
                 backgrounded=set(),
             ),
-            state_task=cast(asyncio.Task[None], None),  # order of initialization
+            state_task=cast(TaskHandle[None], None),  # order of initialization
         )
-        self.state.state_task = asyncio.create_task(self._state_task_target())
+        self.state.state_task = create_task(self._state_task_target())
 
     async def _teardown(self) -> None:
         """The implementation for teardown connector / teardown receiver"""
@@ -327,7 +328,7 @@ class WSPubSubConnectorReceiver:
         if self.state.ws_state.type != StateType.CLOSED:
             self.state.ws_state.cancel_requested.set()
         try:
-            await self.state.state_task
+            await self.state.state_task.wait()
         finally:
             self.state = CRStateTornDown(type=CRStateType.TORN_DOWN)
 
@@ -350,7 +351,7 @@ class WSPubSubConnectorReceiver:
             max_size=state.config.max_received
         )
         received_missed: asyncio.Event = asyncio.Event()
-        received_task = asyncio.create_task(
+        received_task = create_task(
             self._handle_received_task_target(received_queue, received_missed)
         )
 
@@ -396,8 +397,9 @@ class WSPubSubConnectorReceiver:
 
             if received_task.done():
                 connection_statuses = [PubSubClientConnectionStatus.ABANDONED]
-                exc = received_task.exception()
-                if exc is not None:
+                try:
+                    received_task.result()
+                except BaseException as exc:
                     receiver_errors.append(exc)
                 else:
                     receiver_errors.append(
@@ -471,10 +473,11 @@ class WSPubSubConnectorReceiver:
             if state.ws_state.type == StateType.CLOSED:
                 should_process = not received_task.done()
                 unprocessed = received_queue.drain()
-                try:
-                    await received_task
-                except BaseException as e:
-                    receiver_errors.append(e)
+                if not received_task.consumed:
+                    try:
+                        await received_task.wait()
+                    except BaseException as e:
+                        receiver_errors.append(e)
 
                 if should_process:
                     old_error_count = len(receiver_errors)
@@ -674,7 +677,7 @@ class WSPubSubConnectorReceiver:
             or self.state.state_task.done()
         ):
             try:
-                await self.state.state_task
+                await self.state.state_task.wait()
                 self.state = cast(CRState, self.state)  # tell mypy it may have changed
                 if self.state.type == CRStateType.SETUP:
                     self.state = CRStateErrored(

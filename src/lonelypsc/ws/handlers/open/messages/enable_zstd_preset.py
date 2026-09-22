@@ -1,4 +1,3 @@
-import asyncio
 import time
 from typing import TYPE_CHECKING, Optional
 
@@ -6,6 +5,7 @@ from lonelypsp.auth.config import AuthResult
 from lonelypsp.stateful.messages.enable_zstd_preset import B2S_EnableZstdPreset
 
 from lonelypsc.client import PubSubError
+from lonelypsc.util.task import create_task
 from lonelypsc.ws.compressor import (
     CompressorPreparing,
     CompressorReady,
@@ -66,7 +66,7 @@ async def _target(state: StateOpen, message: B2S_EnableZstdPreset) -> None:
         CompressorPreparing(
             type=CompressorState.PREPARING,
             identifier=message.identifier,
-            task=asyncio.create_task(_make_compressor(state, message)),
+            task=create_task(_make_compressor(state, message)),
         )
     )
 
@@ -79,7 +79,7 @@ def check_enable_zstd_preset(state: StateOpen, message: B2S_EnableZstdPreset) ->
     assert state.receiving is None, "already have receiving task"
     state.receiving = ReceivingAuthorizingSimple(
         type=ReceivingState.AUTHORIZING_SIMPLE,
-        task=asyncio.create_task(_target(state, message)),
+        task=create_task(_target(state, message)),
     )
 
 

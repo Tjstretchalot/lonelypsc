@@ -27,7 +27,6 @@ from typing import (
 
 from lonelypsp.compat import fast_dataclass
 from lonelypsp.stateless.make_strong_etag import StrongEtag
-from lonelypsp.util.cancel_and_check import cancel_and_check
 from lonelypsp.util.drainable_asyncio_queue import DrainableAsyncioQueue
 
 from lonelypsc.types.sync_io import (
@@ -36,6 +35,7 @@ from lonelypsc.types.sync_io import (
 )
 from lonelypsc.util.errors import combine_multiple_exceptions
 from lonelypsc.util.io_helpers import PositionedSyncStandardIO
+from lonelypsc.util.task import create_task
 
 try:
     from glob import translate as _glob_translate  # type: ignore
@@ -129,17 +129,16 @@ class PubSubClientSubscriptionIterator:
                 continue
 
             if self.state.buffer.empty():
-                buffer_task = asyncio.create_task(self.state.buffer.wait_not_empty())
-                status_task = asyncio.create_task(
-                    self.state.status_queue.wait_not_empty()
-                )
+                buffer_task = create_task(self.state.buffer.wait_not_empty())
+                status_task = create_task(self.state.status_queue.wait_not_empty())
                 try:
                     await asyncio.wait(
-                        [buffer_task, status_task], return_when=asyncio.FIRST_COMPLETED
+                        [buffer_task.task, status_task.task],
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
                 finally:
                     await asyncio.gather(
-                        cancel_and_check(buffer_task), cancel_and_check(status_task)
+                        buffer_task.cancel_and_check(), status_task.cancel_and_check()
                     )
                 continue
 
@@ -172,18 +171,19 @@ class PubSubClientSubscriptionWithTimeoutIterator:
 
     async def __anext__(self) -> Optional[PubSubClientMessage]:
         """Explicitly expects cancellation"""
-        timeout_task = asyncio.create_task(asyncio.sleep(self.timeout))
-        message_task = asyncio.create_task(self.raw_iter.__anext__())
+        timeout_task = create_task(asyncio.sleep(self.timeout))
+        message_task = create_task(self.raw_iter.__anext__())
         exc: Optional[BaseException] = None
         try:
             await asyncio.wait(
-                (timeout_task, message_task), return_when=asyncio.FIRST_COMPLETED
+                (timeout_task.task, message_task.task),
+                return_when=asyncio.FIRST_COMPLETED,
             )
         except BaseException as e:
             exc = e
 
         _, message_result = await asyncio.gather(
-            cancel_and_check(timeout_task, False), cancel_and_check(message_task)
+            timeout_task.cancel_and_check(False), message_task.cancel_and_check()
         )
 
         if message_result is not None:

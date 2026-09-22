@@ -8,18 +8,19 @@ def check_backgrounded(state: StateOpen) -> CheckResult:
         return CheckResult.CONTINUE
 
     new_backgrounded = set()
+    errors = []
 
     for bknd in state.backgrounded:
         if not bknd.done():
             new_backgrounded.add(bknd)
             continue
 
-        if bknd.exception() is None:
-            continue
-
-        # avoids duplicating the error as it will be found during cleanup
-        # again
-        raise PubSubIrrecoverableError("saw backgrounded task failed")
+        try:
+            bknd.result()
+        except BaseException as exc:
+            errors.append(exc)
 
     state.backgrounded = new_backgrounded
+    if errors:
+        raise PubSubIrrecoverableError("saw backgrounded task failed") from errors[0]
     return CheckResult.RESTART

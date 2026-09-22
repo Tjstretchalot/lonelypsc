@@ -6,6 +6,7 @@ from lonelypsp.auth.config import AuthResult
 from lonelypsp.stateful.messages.enable_zstd_custom import B2S_EnableZstdCustom
 
 from lonelypsc.client import PubSubError
+from lonelypsc.util.task import create_task
 from lonelypsc.ws.compressor import (
     CompressorPreparing,
     CompressorReady,
@@ -60,7 +61,7 @@ async def _target(state: StateOpen, message: B2S_EnableZstdCustom) -> None:
         CompressorPreparing(
             type=CompressorState.PREPARING,
             identifier=message.identifier,
-            task=asyncio.create_task(asyncio.to_thread(_make_compressor, message)),
+            task=create_task(asyncio.to_thread(_make_compressor, message)),
         )
     )
 
@@ -73,7 +74,7 @@ def check_enable_zstd_custom(state: StateOpen, message: B2S_EnableZstdCustom) ->
     assert state.receiving is None, "already have receiving task"
     state.receiving = ReceivingAuthorizingSimple(
         type=ReceivingState.AUTHORIZING_SIMPLE,
-        task=asyncio.create_task(_target(state, message)),
+        task=create_task(_target(state, message)),
     )
 
 

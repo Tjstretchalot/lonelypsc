@@ -1,10 +1,10 @@
-import asyncio
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Protocol, Union
 
 from lonelypsp.compat import fast_dataclass
 
 from lonelypsc.util.errors import combine_multiple_exceptions
+from lonelypsc.util.task import TaskHandle
 from lonelypsc.ws.check_result import CheckResult
 
 try:
@@ -92,7 +92,7 @@ class CompressorPreparing:
     65536 and above are custom dictionaries built for the connection
     """
 
-    task: asyncio.Task[CompressorReady]
+    task: TaskHandle[CompressorReady]
     """The task that is working on preparing the compressor for use"""
 
 
@@ -130,7 +130,7 @@ class CompressorStore(Protocol):
         Raises KeyError if the identifier is not in the store
         """
 
-    def get_compressor_tasks(self) -> List[asyncio.Task[CompressorReady]]:
+    def get_compressor_tasks(self) -> List[TaskHandle[CompressorReady]]:
         """Get the tasks that are preparing compressors, or an empty list
         if there are none.
         """
@@ -200,7 +200,7 @@ class CompressorStoreImpl:
     def get_for_decompression(self, identifier: int) -> Compressor:
         return self.by_compressor_id[identifier]
 
-    def get_compressor_tasks(self) -> List[asyncio.Task[CompressorReady]]:
+    def get_compressor_tasks(self) -> List[TaskHandle[CompressorReady]]:
         return [compressor.task for compressor in self.preparing]
 
     def check_compressor_tasks(self) -> CheckResult:
@@ -215,7 +215,11 @@ class CompressorStoreImpl:
                 continue
 
             try:
-                ready = compressor.task.result()
+                ready = (
+                    compressor.task.cached_result
+                    if compressor.task.consumed
+                    else compressor.task.result()
+                )
                 if excs:
                     continue
                 self._insert_ready(ready)

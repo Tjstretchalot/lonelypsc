@@ -10,6 +10,7 @@ from lonelypsp.stateful.parser_helpers import read_exact
 
 from lonelypsc.client import PubSubError
 from lonelypsc.types.sync_io import SyncIOBaseLikeIO
+from lonelypsc.util.task import create_task
 from lonelypsc.ws.check_result import CheckResult
 from lonelypsc.ws.compressor import CompressorReady, CompressorState
 from lonelypsc.ws.handlers.open.compressor_utils import (
@@ -117,7 +118,7 @@ def check_receiving_waiting_compressor(state: StateOpen) -> CheckResult:
 
     state.receiving = ReceivingDecompressing(
         type=ReceivingState.DECOMPRESSING,
-        task=asyncio.create_task(
+        task=create_task(
             asyncio.to_thread(
                 _decompress,
                 state.receiving.compressed_body,

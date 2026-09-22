@@ -3,7 +3,7 @@ import base64
 import hashlib
 import io
 import time
-from typing import TYPE_CHECKING, Any, Set, cast
+from typing import TYPE_CHECKING, cast
 
 from lonelypsp.auth.config import AuthResult
 from lonelypsp.stateful.constants import BroadcasterToSubscriberStatefulMessageType
@@ -18,6 +18,7 @@ from lonelypsc.client import (
     PubSubIrrecoverableError,
 )
 from lonelypsc.types.websocket_message import WSMessageBytes
+from lonelypsc.util.task import create_task
 from lonelypsc.ws.check_result import (
     CheckResult,
     CheckStateChangerResult,
@@ -78,17 +79,17 @@ async def _core(state: StateConfiguring) -> State:
     if (result := _check_backgrounded(state)).type == CheckResult.RESTART:
         return result.state
 
-    wait_cancel_requested = asyncio.create_task(state.cancel_requested.wait())
-    await asyncio.wait(
-        [
-            state.read_task,
-            *([state.send_task] if state.send_task is not None else []),
-            wait_cancel_requested,
-            *state.backgrounded,
-        ],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    wait_cancel_requested.cancel()
+    async with create_task(state.cancel_requested.wait()) as wait_cancel_requested:
+        await asyncio.wait(
+            [
+                state.read_task.task,
+                *([state.send_task.task] if state.send_task is not None else []),
+                wait_cancel_requested.task,
+                *(task.task for task in state.backgrounded),
+            ],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        await wait_cancel_requested.cancel_and_check()
     return state
 
 
@@ -212,24 +213,32 @@ def _check_backgrounded(state: StateConfiguring) -> CheckStateChangerResult:
     if not any(task.done() for task in state.backgrounded):
         return CheckStateChangerResultContinue(type=CheckResult.CONTINUE)
 
-    new_backgrounded: Set[asyncio.Task[Any]] = set()
+    new_backgrounded = set()
+    errors = []
     for task in state.backgrounded:
         if not task.done():
             new_backgrounded.add(task)
             continue
 
-        if task.exception() is not None:
-            raise PubSubIrrecoverableError("background task failed")
+        try:
+            task.result()
+        except BaseException as exc:
+            errors.append(exc)
 
     state.backgrounded = new_backgrounded
+    if errors:
+        raise PubSubIrrecoverableError("background task failed") from errors[0]
     return CheckStateChangerResultDone(type=CheckResult.RESTART, state=state)
 
 
 async def _cleanup(state: StateConfiguring) -> None:
     """Cancels any pending tasks; can be called multiple times"""
     if state.send_task is not None:
-        state.send_task.cancel()
-    state.read_task.cancel()
+        if not state.send_task.consumed:
+            await state.send_task.cancel_and_check()
+        state.send_task = None
+    if not state.read_task.consumed:
+        await state.read_task.cancel_and_check()
 
 
 async def _recover(state: StateConfiguring, /, *, cause: BaseException) -> State:

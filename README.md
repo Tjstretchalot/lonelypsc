@@ -135,20 +135,16 @@ async def main():
             'Subscribing to one exact topic until a message is received, '
             'with arbitrary timeout behavior...'
         )
-        timeout_task = asyncio.create_task(asyncio.sleep(5))
         async with client.subscribe_exact(b'foo/bar') as subscription:
             # implementation note: will error if you try to call messages() more than
             # once on a subscription
             sub_iter = await subscription.messages()
-            message_task = asyncio.create_task(sub_iter.__anext__())
-            await asyncio.wait({timeout_task, message_task}, return_when=asyncio.FIRST_COMPLETED)
-            if not message_task.cancel():
-                timeout_task.cancel()
-                message = message_task.result()
-                print(f'Received message on {message.topic}: {message.data.read().decode('utf-8')}')
-            else:
-                message_task.cancel()
+            try:
+                message = await asyncio.wait_for(sub_iter.__anext__(), timeout=5)
+            except asyncio.TimeoutError:
                 print('Timed out waiting for message')
+            else:
+                print(f'Received message on {message.topic}: {message.data.read().decode('utf-8')}')
 
         print('Subscribing to one exact topic with simple timeout behavior...')
         async with client.subscribe_exact(b'foo/bar') as subscription:

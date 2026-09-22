@@ -1,9 +1,9 @@
-import asyncio
 from typing import TYPE_CHECKING
 
 from lonelypsp.stateful.messages.confirm_notify import B2S_ConfirmNotify
 
 from lonelypsc.client import PubSubError, PubSubIrrecoverableError
+from lonelypsc.util.task import create_task
 from lonelypsc.ws.handlers.open.messages.protocol import MessageChecker
 from lonelypsc.ws.internal_callbacks import finalize_internal_callback
 from lonelypsc.ws.state import (
@@ -56,7 +56,7 @@ def check_confirm_notify(state: StateOpen, message: B2S_ConfirmNotify) -> None:
         state.sending = None
 
     state.backgrounded.add(
-        asyncio.create_task(
+        create_task(
             finalize_internal_callback(
                 internal_message.callback,
                 InternalMessageStateAcknowledged(

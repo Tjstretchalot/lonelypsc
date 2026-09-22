@@ -31,6 +31,7 @@ from lonelypsc.config.config import BroadcastersShuffler, PubSubBroadcasterConfi
 from lonelypsc.config.ws_config import WebsocketPubSubConfig
 from lonelypsc.types.sync_io import SyncIOBaseLikeIO, SyncStandardIO
 from lonelypsc.types.websocket_message import WSMessage
+from lonelypsc.util.task import TaskHandle
 from lonelypsc.ws.compressor import CompressorStore
 
 
@@ -344,7 +345,7 @@ class InternalMessageStateAndCallback:
     callback: InternalMessageStateCallback
     """the actual callback function"""
 
-    task: Optional[asyncio.Task[None]]
+    task: Optional[TaskHandle[None]]
     """the task that is running the callback right now, if any. the state can only
     be changed if this task is None or from within this task
     """
@@ -654,7 +655,7 @@ class ReceivingIncomplete:
     comes in. closing this file will delete the data
     """
 
-    authorization_task: Optional[asyncio.Task[AuthResult]]
+    authorization_task: Optional[TaskHandle[AuthResult]]
     """the task checking if the authorization on the first message is valid or None
     if the task completed, was already checked, and was "ok"
     """
@@ -672,7 +673,7 @@ class ReceivingAuthorizingMissed:
     message: B2S_Missed
     """the message that was received"""
 
-    authorization_task: asyncio.Task[AuthResult]
+    authorization_task: TaskHandle[AuthResult]
     """the task the subscriber is waiting on to finish checking the messages authorization"""
 
 
@@ -685,7 +686,7 @@ class ReceivingAuthorizingSimple:
     type: Literal[ReceivingState.AUTHORIZING_SIMPLE]
     """discriminator value"""
 
-    task: asyncio.Task[None]
+    task: TaskHandle[None]
     """the task that is applying the change"""
 
 
@@ -710,7 +711,7 @@ class ReceivingAuthorizing:
     in. closing this file will delete the data
     """
 
-    authorization_task: asyncio.Task[AuthResult]
+    authorization_task: TaskHandle[AuthResult]
     """the task the subscriber is waiting on to finish checking the messages authorization"""
 
 
@@ -747,7 +748,7 @@ class ReceivingDecompressing:
     type: Literal[ReceivingState.DECOMPRESSING]
     """discriminator value"""
 
-    task: asyncio.Task[ReceivedMessage]
+    task: TaskHandle[ReceivedMessage]
     """the task that will produce the received message"""
 
 
@@ -790,7 +791,7 @@ class SendingSimple:
 
     type: Literal[SendingState.SIMPLE]
     """discriminator value"""
-    task: asyncio.Task[None]
+    task: TaskHandle[None]
     """the task that is sending the message"""
 
 
@@ -806,7 +807,7 @@ class SendingManagementTask:
     """discriminator value"""
     management_task: ManagementTask
     """the management task that is being sent"""
-    task: asyncio.Task[None]
+    task: TaskHandle[None]
     """the task that is sending the message"""
 
 
@@ -818,7 +819,7 @@ class SendingInternalMessage:
 
     type: Literal[SendingState.INTERNAL_MESSAGE]
     """discriminator value"""
-    task: asyncio.Task[None]
+    task: TaskHandle[None]
     """the task that is sending the message"""
     internal_message: InternalMessage
     """the message that is being sent
@@ -889,7 +890,7 @@ class StateConnecting:
     client_session: aiohttp.ClientSession
     """the client session the websocket is being connected by means of"""
 
-    websocket_task: asyncio.Task[ClientWebSocketResponse]
+    websocket_task: TaskHandle[ClientWebSocketResponse]
     """the task that is connecting to the broadcaster"""
 
     cancel_requested: asyncio.Event
@@ -904,7 +905,7 @@ class StateConnecting:
     tasks: TasksOnceOpen
     """the tasks that need to be performed after configuring the stream"""
 
-    backgrounded: Set[asyncio.Task[Any]]
+    backgrounded: Set[TaskHandle[Any]]
     """
     tasks that have been scheduled and if they error it's not recoverable, but
     the result isnt otherwise important. the most prominent example is informing
@@ -946,13 +947,13 @@ class StateConfiguring:
     subscriber_nonce: bytes
     """the 32 bytes that the subscriber is contributing to the connection nonce"""
 
-    send_task: Optional[asyncio.Task[None]]
+    send_task: Optional[TaskHandle[None]]
     """if still trying to send the configure message, the task for sending it"""
 
-    read_task: asyncio.Task[WSMessage]
+    read_task: TaskHandle[WSMessage]
     """the task for reading the next message from the websocket"""
 
-    backgrounded: Set[asyncio.Task[Any]]
+    backgrounded: Set[TaskHandle[Any]]
     """
     tasks that have been scheduled and if they error it's not recoverable, but
     the result isnt otherwise important. the most prominent example is informing
@@ -1094,10 +1095,10 @@ class StateOpen:
     None
     """
 
-    read_task: asyncio.Task[WSMessage]
+    read_task: TaskHandle[WSMessage]
     """the task responsible for reading the next message from the websocket"""
 
-    backgrounded: Set[asyncio.Task[Any]]
+    backgrounded: Set[TaskHandle[Any]]
     """
     tasks that have been scheduled and if they error it's not recoverable, but
     the result isnt otherwise important. the most prominent example is informing
@@ -1132,7 +1133,7 @@ class StateWaitingRetry:
     before proceeding to the next attempt
     """
 
-    backgrounded: Set[asyncio.Task[Any]]
+    backgrounded: Set[TaskHandle[Any]]
     """
     tasks that have been scheduled and if they error it's not recoverable, but
     the result isnt otherwise important. the most prominent example is informing
@@ -1170,7 +1171,7 @@ class StateClosing:
     a broadcaster once the websocket is done closing
     """
 
-    backgrounded: Set[asyncio.Task[Any]]
+    backgrounded: Set[TaskHandle[Any]]
     """
     tasks that have been scheduled and if they error it's not recoverable, but
     the result isnt otherwise important. the most prominent example is informing

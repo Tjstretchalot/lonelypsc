@@ -81,7 +81,7 @@ async def send_internal_small_message(
         return await send_internal_small_message_uncompressed(state, message)
 
     if compressor.type == CompressorState.PREPARING:
-        compressor = await compressor.task
+        compressor = await compressor.task.wait()
 
     await send_internal_small_message_compressed(state, message, compressor=compressor)
 
@@ -105,7 +105,7 @@ async def send_internal_large_message(
         return await send_internal_large_message_uncompressed(state, message)
 
     if compressor.type == CompressorState.PREPARING:
-        compressor = await compressor.task
+        compressor = await compressor.task.wait()
 
     await send_internal_large_message_compressed(state, message, compressor=compressor)
 

@@ -33,7 +33,7 @@ async def recover_open(state: StateOpen, /, *, cause: BaseException) -> State:
     tries to move towards retrying, raising an error if one occurs during
     cleanup such that recovery is no longer possible
     """
-    _cancel_tasks(state)
+    await _cancel_tasks(state)
     bknd_errors = _sweep_backgrounded(state)
     if bknd_errors:
         raise combine_multiple_exceptions("backgrounded tasks failed", bknd_errors)
@@ -66,60 +66,70 @@ async def recover_open(state: StateOpen, /, *, cause: BaseException) -> State:
     )
 
 
-def _cancel_tasks(state: StateOpen) -> None:
-    """Cancels tasks that are websocket dependent on the state, with
-    special handling for the receiving information which may not have
-    a single cancelable task for cleanup
-    """
-    for task in state.compressors.get_compressor_tasks():
-        task.cancel()
+async def _cancel_tasks(state: StateOpen) -> None:
+    """Cancel and consume all websocket-dependent tasks owned by the state."""
+    for compressor_task in state.compressors.get_compressor_tasks():
+        if not compressor_task.consumed:
+            await compressor_task.cancel_and_check()
 
     if state.receiving is not None:
         try:
             if state.receiving.type == ReceivingState.INCOMPLETE:
                 state.receiving.body.close()
-                if state.receiving.authorization_task is not None:
-                    state.receiving.authorization_task.cancel()
+                authorization_task = state.receiving.authorization_task
+                if authorization_task is not None and not authorization_task.consumed:
+                    await authorization_task.cancel_and_check()
             elif state.receiving.type == ReceivingState.AUTHORIZING:
                 state.receiving.body.close()
-                state.receiving.authorization_task.cancel()
+                authorization_task = state.receiving.authorization_task
+                if not authorization_task.consumed:
+                    await authorization_task.cancel_and_check()
             elif state.receiving.type == ReceivingState.AUTHORIZING_MISSED:
-                state.receiving.authorization_task.cancel()
+                authorization_task = state.receiving.authorization_task
+                if not authorization_task.consumed:
+                    await authorization_task.cancel_and_check()
             elif state.receiving.type == ReceivingState.AUTHORIZING_SIMPLE:
-                state.receiving.task.cancel()
+                receiving_task = state.receiving.task
+                if not receiving_task.consumed:
+                    await receiving_task.cancel_and_check()
             elif state.receiving.type == ReceivingState.WAITING_COMPRESSOR:
                 state.receiving.compressed_body.close()
             else:
-                if not state.receiving.task.cancel():
-                    msg = state.receiving.task.result()
-                    try:
-                        state.received.put_nowait(msg)
-                    except BaseException:
-                        if msg.type == ReceivedMessageType.LARGE:
-                            msg.stream.close()
-                        raise
+                decompress_task = state.receiving.task
+                if not decompress_task.consumed:
+                    msg = await decompress_task.cancel_and_check()
+                    if msg is not None:
+                        try:
+                            state.received.put_nowait(msg)
+                        except BaseException:
+                            if msg.type == ReceivedMessageType.LARGE:
+                                msg.stream.close()
+                            raise
         finally:
             state.receiving = None
 
-    if state.sending is not None:
-        state.sending.task.cancel()
+    if state.sending is not None and not state.sending.task.consumed:
+        await state.sending.task.cancel_and_check()
 
-    state.read_task.cancel()
+    if not state.read_task.consumed:
+        await state.read_task.cancel_and_check()
 
 
 def _sweep_backgrounded(state: StateOpen) -> List[BaseException]:
     """Removes done tasks from the states backgrounded set and returns
-    any exceptions that were found
+    any exceptions that were found.
     """
     new_backgrounded = set()
     errors: List[BaseException] = []
     for task in state.backgrounded:
-        if task.done():
-            exc = task.exception()
-            if exc is not None:
-                errors.append(exc)
-        else:
+        if not task.done():
             new_backgrounded.add(task)
+            continue
+
+        try:
+            task.result()
+        except BaseException as exc:
+            errors.append(exc)
     state.backgrounded = new_backgrounded
     return errors
 
@@ -187,7 +197,7 @@ async def shutdown_open(state: StateOpen, /, *, cause: BaseException) -> StateCl
     """Shutdown function for OPEN; cleans up state-specific resources and
     moves towards the CLOSED state. Doesn't raise errors
     """
-    _cancel_tasks(state)
+    await _cancel_tasks(state)
     bknd_errors = _sweep_backgrounded(state)
     if bknd_errors:
         cause = combine_multiple_exceptions(

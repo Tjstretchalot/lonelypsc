@@ -4,8 +4,7 @@ import sys
 import time
 from typing import Any, List
 
-from lonelypsp.util.cancel_and_check import cancel_and_check
-
+from lonelypsc.util.task import TaskHandle, create_task
 from lonelypsc.ws.state import (
     OpenRetryInformationType,
     ReceivingState,
@@ -21,14 +20,14 @@ else:
 
 async def wait_something_changed(state: StateOpen) -> None:
     """Waits for something to do"""
-    managed_by_us: List[asyncio.Task[Any]] = []
-    other_tasks: List[asyncio.Task[Any]] = []
+    managed_by_us: List[TaskHandle[Any]] = []
+    other_tasks: List[TaskHandle[Any]] = []
 
     try:
-        managed_by_us.append(asyncio.create_task(state.cancel_requested.wait()))
+        managed_by_us.append(create_task(state.cancel_requested.wait()))
         if state.retry.type == OpenRetryInformationType.TENTATIVE:
             managed_by_us.append(
-                asyncio.create_task(
+                create_task(
                     asyncio.sleep(math.ceil(state.retry.stable_at - time.time()))
                 )
             )
@@ -37,7 +36,7 @@ async def wait_something_changed(state: StateOpen) -> None:
 
         if state.unsent_notifications.empty():
             managed_by_us.append(
-                asyncio.create_task(state.unsent_notifications.wait_not_empty())
+                create_task(state.unsent_notifications.wait_not_empty())
             )
 
         other_tasks.extend(
@@ -52,9 +51,7 @@ async def wait_something_changed(state: StateOpen) -> None:
         )
 
         if state.management_tasks.empty():
-            managed_by_us.append(
-                asyncio.create_task(state.management_tasks.wait_not_empty())
-            )
+            managed_by_us.append(create_task(state.management_tasks.wait_not_empty()))
 
         if state.receiving is None:
             ...  # avoids a nesting level
@@ -75,7 +72,7 @@ async def wait_something_changed(state: StateOpen) -> None:
             _assert_never(state.receiving)
 
         if state.received.full():
-            managed_by_us.append(asyncio.create_task(state.received.wait_not_full()))
+            managed_by_us.append(create_task(state.received.wait_not_full()))
 
         if state.sending is None:
             ...  # avoids a nesting level
@@ -94,10 +91,11 @@ async def wait_something_changed(state: StateOpen) -> None:
         other_tasks.extend(state.backgrounded)
 
         await asyncio.wait(
-            managed_by_us + other_tasks, return_when=asyncio.FIRST_COMPLETED
+            [task.task for task in managed_by_us + other_tasks],
+            return_when=asyncio.FIRST_COMPLETED,
         )
     finally:
-        await asyncio.gather(*(cancel_and_check(task) for task in managed_by_us))
+        await asyncio.gather(*(task.cancel_and_check() for task in managed_by_us))
 
 
 def _assert_never(v: Never) -> None:

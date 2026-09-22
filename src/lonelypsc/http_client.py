@@ -43,7 +43,6 @@ from lonelypsp.stateless.make_strong_etag import (
 from lonelypsp.tracing.stateless.notify import (
     StatelessTracingNotifyOnSending,
 )
-from lonelypsp.util.cancel_and_check import cancel_and_check
 from starlette.background import BackgroundTask
 
 from lonelypsc.client import (
@@ -76,6 +75,7 @@ from lonelypsc.util.io_helpers import (
     PositionedSyncStandardIO,
 )
 from lonelypsc.util.request_body_io import AsyncIterableAIO
+from lonelypsc.util.task import TaskHandle, create_task
 
 if TYPE_CHECKING:
     from lonelypsc.http.notify.result import HttpPubSubNotifyResult
@@ -566,7 +566,7 @@ class HttpPubSubClientConnector(Generic[InitializerT]):
         etag = rdr.read(64)
         strong_etag = StrongEtag(format=0, etag=etag)
 
-        if not self.config.is_check_subscription_response_allowed(
+        if not await self.config.is_check_subscription_response_allowed(
             tracing=resp_tracing,
             strong_etag=strong_etag,
             authorization=resp_authorization,
@@ -709,7 +709,7 @@ class HttpPubSubClientReceiver:
             []
         )
         """The registered connection status handlers"""
-        self.bind_task: Optional[asyncio.Task] = None
+        self.bind_task: Optional[TaskHandle[None]] = None
         self.connection_status = PubSubClientConnectionStatus.LOST
         self._status_counter = 0
         """Ensures we can give unique status handler ids"""
@@ -729,7 +729,7 @@ class HttpPubSubClientReceiver:
         router = APIRouter()
         router.add_api_route("/v1/receive", self._receive, methods=["POST"])
         router.add_api_route("/v1/recover", self._recover, methods=["POST"])
-        self.bind_task = asyncio.create_task(bind_config["callback"](router))
+        self.bind_task = create_task(bind_config["callback"](router))
 
         async with self._status_handlers_lock:
             for _, status_handler in self.status_handlers:
@@ -739,7 +739,7 @@ class HttpPubSubClientReceiver:
                     excs: List[BaseException] = [e]
                     self.connection_status = PubSubClientConnectionStatus.ABANDONED
 
-                    canceler = asyncio.create_task(cancel_and_check(self.bind_task))
+                    canceler = create_task(self.bind_task.cancel_and_check())
                     self.bind_task = None
 
                     for _, handler in self.status_handlers:
@@ -750,7 +750,7 @@ class HttpPubSubClientReceiver:
 
                     self.status_handlers = []
                     try:
-                        await canceler
+                        await canceler.wait()
                     except BaseException as e:
                         excs.append(e)
 
@@ -762,7 +762,7 @@ class HttpPubSubClientReceiver:
 
     async def teardown_receiver(self) -> None:
         assert self.bind_task is not None, "not set up"
-        canceler = asyncio.create_task(cancel_and_check(self.bind_task))
+        canceler = create_task(self.bind_task.cancel_and_check())
         self.bind_task = None
 
         excs: List[BaseException] = []
@@ -777,7 +777,7 @@ class HttpPubSubClientReceiver:
             self.status_handlers = []
 
         try:
-            await canceler
+            await canceler.wait()
         except BaseException as e:
             excs.append(e)
 
