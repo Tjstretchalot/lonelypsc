@@ -21,10 +21,12 @@ def check_receiving_authorizing_simple(state: StateOpen) -> CheckResult:
     if not state.receiving.task.done():
         return CheckResult.CONTINUE
 
-    if state.receiving.task.exception() is not None:
+    try:
+        state.receiving.task.result()
+    except BaseException as exc:
         raise PubSubError(
             "failed to handle simple message (probably authorization failed)"
-        ) from state.receiving.task.exception()
+        ) from exc
 
     state.receiving = None
     return CheckResult.RESTART

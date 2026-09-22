@@ -1,15 +1,14 @@
-import asyncio
-
 from aiohttp import ClientWebSocketResponse, WSMsgType
 
 from lonelypsc.types.websocket_message import WSMessage
+from lonelypsc.util.task import TaskHandle, create_task
 
 
 def make_websocket_read_task(
     websocket: ClientWebSocketResponse,
-) -> asyncio.Task[WSMessage]:
+) -> TaskHandle[WSMessage]:
     """Creats an asyncio task that provides a better typed version of websocket.receive()"""
-    return asyncio.create_task(adapt_websocket_read(websocket))
+    return create_task(adapt_websocket_read(websocket))
 
 
 async def adapt_websocket_read(websocket: ClientWebSocketResponse) -> WSMessage:

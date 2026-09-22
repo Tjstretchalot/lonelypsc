@@ -1,7 +1,6 @@
-import asyncio
-
 from lonelypsp.stateful.constants import SubscriberToBroadcasterStatefulMessageType
 
+from lonelypsc.util.task import create_task
 from lonelypsc.ws.check_result import CheckResult
 from lonelypsc.ws.handlers.open.sends.confirm_receive import send_confirm_receive
 from lonelypsc.ws.handlers.open.sends.continue_receive import send_continue_receive
@@ -27,6 +26,6 @@ def check_unsent_acks(state: StateOpen) -> CheckResult:
 
     state.sending = SendingSimple(
         type=SendingState.SIMPLE,
-        task=asyncio.create_task(ack_co),
+        task=create_task(ack_co),
     )
     return CheckResult.RESTART

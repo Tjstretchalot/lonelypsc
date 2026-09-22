@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List, Union
 
 from lonelypsc.util.errors import combine_multiple_exceptions
+from lonelypsc.util.task import create_task
 from lonelypsc.ws.state import (
     InternalMessage,
     InternalMessageState,
@@ -39,7 +40,7 @@ def sweep_internal_message(message: InternalMessage) -> None:
         assert _is_intermediate_state(message.callback.state)
         message.callback.state = message.callback.queued
         message.callback.queued = None
-        message.callback.task = asyncio.create_task(
+        message.callback.task = create_task(
             message.callback.callback(message.callback.state)
         )
 
@@ -91,7 +92,14 @@ async def readable_internal_message(
         if message.callback.task is None:
             break
 
-        await message.callback.task
+        task = message.callback.task
+        assert task is not None
+        try:
+            await task.wait()
+        except BaseException:
+            message.callback.task = None
+            raise
+        message.callback.task = None
         message.callback.queued = None
         sweep_internal_message(message)
 
@@ -101,7 +109,7 @@ async def readable_internal_message(
         await future
 
     try:
-        message.callback.task = asyncio.create_task(_task_target())
+        message.callback.task = create_task(_task_target())
 
         if message.callback.state.type == InternalMessageStateType.SENT:
             message.callback.state = InternalMessageStateResending(
@@ -137,18 +145,24 @@ async def finalize_internal_callback(
 
     exceptions: List[BaseException] = []
     while callback.task is not None:
-        if callback.task.done():
-            if (exc := callback.task.exception()) is not None:
+        task = callback.task
+        if task.done():
+            try:
+                task.result()
+            except BaseException as exc:
                 exceptions.append(exc)
             callback.task = None
             break
 
         try:
-            await callback.task
-            # NOTE: callback.task may have changed here as we may not have
-            # been the first thing scheduled
-        except BaseException:
-            ...  # will see it in the next iteration if still relevant
+            await task.wait()
+        except BaseException as exc:
+            exceptions.append(exc)
+
+        # The callback may have scheduled a replacement while this task was
+        # being awaited.  Only clear the task we actually consumed.
+        if callback.task is task:
+            callback.task = None
 
     assert _is_intermediate_state(callback.state), "final state already reached"
     callback.state = final_state  # prevents future tasks from being scheduled

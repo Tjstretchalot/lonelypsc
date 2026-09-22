@@ -12,12 +12,12 @@ from typing import (
 
 import uvicorn
 from fastapi import APIRouter, FastAPI
-from lonelypsp.util.cancel_and_check import cancel_and_check
 
 from lonelypsc.config.http_config import (
     HttpPubSubBindManualConfig,
     HttpPubSubBindUvicornConfig,
 )
+from lonelypsc.util.task import TaskHandle, create_task
 
 T = TypeVar("T")
 
@@ -172,27 +172,25 @@ class BindWithUvicornCallback:
             connection.shutdown()
 
         timeout_task = (
-            asyncio.create_task(
-                asyncio.sleep(uv_server.config.timeout_graceful_shutdown)
-            )
+            create_task(asyncio.sleep(uv_server.config.timeout_graceful_shutdown))
             if uv_server.config.timeout_graceful_shutdown is not None
             else None
         )
 
-        connection_done_tasks: List[asyncio.Task[Any]] = []
+        connection_done_tasks: List[TaskHandle[Any]] = []
 
         if uv_server.server_state.connections:
             replacer = _EmptyEventSet(uv_server.server_state.connections)
             for conn in replacer.raw:
                 conn.connections = cast(Any, replacer)
             uv_server.server_state.connections = cast(Any, replacer)
-            connection_done_tasks.append(asyncio.create_task(replacer.event.wait()))
+            connection_done_tasks.append(create_task(replacer.event.wait()))
 
         if connection_done_tasks or uv_server.server_state.tasks:
-            graceful_shutdown_complete_task = asyncio.create_task(
+            graceful_shutdown_complete_task = create_task(
                 asyncio.wait(
                     [
-                        *connection_done_tasks,
+                        *(task.task for task in connection_done_tasks),
                         *uv_server.server_state.tasks,
                     ],
                     return_when=asyncio.ALL_COMPLETED,
@@ -201,26 +199,30 @@ class BindWithUvicornCallback:
             if timeout_task is not None:
                 await asyncio.wait(
                     [
-                        timeout_task,
-                        graceful_shutdown_complete_task,
+                        timeout_task.task,
+                        graceful_shutdown_complete_task.task,
                     ],
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-                if await cancel_and_check(timeout_task, True):
+                if await timeout_task.cancel_and_check(True):
                     warnings.warn_explicit(
                         "graceful shutdown timed out", ResourceWarning, "", 0
                     )
-                await cancel_and_check(graceful_shutdown_complete_task)
+                await graceful_shutdown_complete_task.cancel_and_check()
             else:
-                await graceful_shutdown_complete_task
+                await graceful_shutdown_complete_task.wait()
                 assert not uv_server.server_state.connections
                 assert not uv_server.server_state.tasks
 
-            for task in uv_server.server_state.tasks:
-                await cancel_and_check(task)
+            for server_task in uv_server.server_state.tasks:
+                await TaskHandle(server_task).cancel_and_check()
 
-            for task in connection_done_tasks:
-                await cancel_and_check(task)
+            for connection_task in connection_done_tasks:
+                if not connection_task.consumed:
+                    await connection_task.cancel_and_check()
+
+        if timeout_task is not None and not timeout_task.consumed:
+            await timeout_task.cancel_and_check()
 
         if not uv_server.force_exit:
             await uv_server.lifespan.shutdown()
@@ -252,25 +254,24 @@ class BindWithUvicornCallback:
 
         # server.main_loop relies on sleeping but isn't safe to cancel because
         # it might be in on_tick if unlucky; so we reimplement here
-        cancel_event_wait_task = asyncio.create_task(cancel_event.wait())
+        async with create_task(cancel_event.wait()) as cancel_event_wait_task:
+            counter = 0
+            while not await server.on_tick(counter):
+                counter += 1
+                if counter == 864000:
+                    counter = 0
 
-        counter = 0
-        while not await server.on_tick(counter):
-            counter += 1
-            if counter == 864000:
-                counter = 0
+                async with create_task(asyncio.sleep(0.1)) as sleep_task:
+                    await asyncio.wait(
+                        [sleep_task.task, cancel_event_wait_task.task],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if await sleep_task.cancel_and_check(True):
+                        # since sleep_task wasn't done, must have been canceled
+                        assert cancel_event_wait_task.done()
+                        break
 
-            sleep_task = asyncio.create_task(asyncio.sleep(0.1))
-            await asyncio.wait(
-                [sleep_task, cancel_event_wait_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if await cancel_and_check(sleep_task, True):
-                # since sleep_task wasn't done, must have been canceled
-                assert cancel_event_wait_task.done()
-                break
-
-        await self._shutdown(server)
+            await self._shutdown(server)
 
     async def __call__(self, router: APIRouter) -> None:
         app = FastAPI()
@@ -287,13 +288,14 @@ class BindWithUvicornCallback:
         )
         uv_server = uvicorn.Server(uv_config)
         cancel_event = asyncio.Event()
-        serve_task = asyncio.create_task(self._serve(uv_server, cancel_event))
+        serve_task = create_task(self._serve(uv_server, cancel_event))
 
         try:
-            await asyncio.shield(serve_task)
+            await serve_task.wait(shield=True)
         finally:
             cancel_event.set()
-            await serve_task
+            if not serve_task.consumed:
+                await serve_task.wait()
 
 
 async def handle_bind_with_uvicorn(

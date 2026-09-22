@@ -1,4 +1,3 @@
-import asyncio
 import sys
 from typing import Any, Coroutine, cast
 
@@ -6,13 +5,14 @@ import aiohttp
 
 from lonelypsc.config.config import PubSubBroadcasterConfig
 from lonelypsc.config.ws_config import WebsocketPubSubConfig
+from lonelypsc.util.task import TaskHandle, create_task
 
 
 def make_websocket_connect_task(
     config: WebsocketPubSubConfig,
     broadcaster: PubSubBroadcasterConfig,
     client_session: aiohttp.ClientSession,
-) -> asyncio.Task[aiohttp.ClientWebSocketResponse]:
+) -> TaskHandle[aiohttp.ClientWebSocketResponse]:
     """Creates the standard task to connect to the given broadcaster within the
     given session, usually for creating a CONNECTING state
 
@@ -28,7 +28,7 @@ def make_websocket_connect_task(
 
     if sys.version_info < (3, 11):
         # aiohttp omits the decode_text=True overload on Python 3.10.
-        return asyncio.create_task(
+        return create_task(
             cast(
                 Coroutine[Any, Any, aiohttp.ClientWebSocketResponse],
                 client_session.ws_connect(
@@ -44,7 +44,7 @@ def make_websocket_connect_task(
             )
         )
 
-    return asyncio.create_task(
+    return create_task(
         client_session.ws_connect(
             websocket_url,
             # WARN: do not use ClientWSTimeout ws_receive, which will ignore

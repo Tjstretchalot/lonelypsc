@@ -7,6 +7,7 @@ from lonelypsp.stateful.messages.configure import S2B_Configure, serialize_s2b_c
 
 from lonelypsc.client import PubSubCancelRequested, PubSubIrrecoverableError
 from lonelypsc.util.errors import combine_multiple_exceptions
+from lonelypsc.util.task import create_task
 from lonelypsc.util.websocket import send_bytes_like
 from lonelypsc.ws.check_result import (
     CheckResult,
@@ -60,10 +61,14 @@ async def _core(state: StateConnecting) -> State:
 
 async def _recover(state: StateConnecting, /, *, cause: BaseException) -> State:
     try:
+        if not state.websocket_task.consumed:
+            websocket = await state.websocket_task.cancel_and_check()
+            if websocket is not None:
+                await websocket.close()
         await state.client_session.close()
-    except Exception as e:
+    except BaseException as e:
         cause = combine_multiple_exceptions(
-            "failed to close session", [e], context=cause
+            "failed to close connecting resources", [e], context=cause
         )
 
     return await handle_connection_failure(
@@ -78,10 +83,11 @@ async def _recover(state: StateConnecting, /, *, cause: BaseException) -> State:
 
 async def _shutdown(state: StateConnecting, /, *, cause: BaseException) -> State:
     cleanup_excs: List[BaseException] = []
-    if state.websocket_task.done():
+    if not state.websocket_task.consumed:
         try:
-            websocket = state.websocket_task.result()
-            await websocket.close()
+            websocket = await state.websocket_task.cancel_and_check()
+            if websocket is not None:
+                await websocket.close()
         except BaseException as e:
             cleanup_excs.append(e)
     try:
@@ -103,21 +109,21 @@ async def _shutdown(state: StateConnecting, /, *, cause: BaseException) -> State
 
 
 async def _wait_something_changed(state: StateConnecting) -> None:
-    wait_cancel = asyncio.create_task(state.cancel_requested.wait())
-    await asyncio.wait(
-        [
-            wait_cancel,
-            state.websocket_task,
-            *[
-                msg.callback.task
-                for msg in state.tasks.resending_notifications
-                if msg.callback.task is not None
+    async with create_task(state.cancel_requested.wait()) as wait_cancel:
+        await asyncio.wait(
+            [
+                wait_cancel.task,
+                state.websocket_task.task,
+                *[
+                    msg.callback.task.task
+                    for msg in state.tasks.resending_notifications
+                    if msg.callback.task is not None
+                ],
+                *(task.task for task in state.backgrounded),
             ],
-            *state.backgrounded,
-        ],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    wait_cancel.cancel()
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        await wait_cancel.cancel_and_check()
 
 
 async def _check_canceled(state: StateConnecting) -> CheckStateChangerResult:
@@ -132,20 +138,21 @@ async def _sweep_backgrounded(state: StateConnecting) -> None:
         return
 
     new_backgrounded = set()
+    errors = []
 
     for bknd in state.backgrounded:
         if not bknd.done():
             new_backgrounded.add(bknd)
             continue
 
-        if bknd.exception() is None:
-            continue
-
-        # avoids duplicating the error as it will be found during cleanup
-        # again
-        raise PubSubIrrecoverableError("saw backgrounded task failed")
+        try:
+            bknd.result()
+        except BaseException as exc:
+            errors.append(exc)
 
     state.backgrounded = new_backgrounded
+    if errors:
+        raise PubSubIrrecoverableError("saw backgrounded task failed") from errors[0]
 
 
 async def _sweep_resending_notifications(state: StateConnecting) -> None:
@@ -182,7 +189,7 @@ async def _check_websocket(state: StateConnecting) -> CheckStateChangerResult:
             retry=state.retry,
             tasks=state.tasks,
             subscriber_nonce=subscriber_nonce,
-            send_task=asyncio.create_task(
+            send_task=create_task(
                 send_bytes_like(
                     websocket,
                     serialize_s2b_configure(

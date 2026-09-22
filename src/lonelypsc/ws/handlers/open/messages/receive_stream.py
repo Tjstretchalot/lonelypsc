@@ -1,4 +1,3 @@
-import asyncio
 import dataclasses
 import hashlib
 import tempfile
@@ -10,6 +9,7 @@ from lonelypsp.stateful.constants import SubscriberToBroadcasterStatefulMessageT
 from lonelypsp.stateful.messages.receive_stream import B2S_ReceiveStream
 
 from lonelypsc.client import PubSubError, PubSubIrrecoverableError
+from lonelypsc.util.task import create_task
 from lonelypsc.ws.handlers.open.handle_authorized_receive import (
     handle_authorized_receive,
 )
@@ -57,7 +57,7 @@ def check_receive_stream(state: StateOpen, message: B2S_ReceiveStream) -> None:
             part_id=-1,
             body_hasher=hashlib.sha512(),
             body=tempfile.SpooledTemporaryFile(max_size=spool_size),
-            authorization_task=asyncio.create_task(
+            authorization_task=create_task(
                 state.config.is_receive_allowed(
                     tracing=message.tracing,
                     url=make_for_receive_websocket_url_and_change_counter(state),

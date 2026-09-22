@@ -11,10 +11,10 @@ def check_sending(state: StateOpen) -> CheckResult:
     if state.sending is None or not state.sending.task.done():
         return CheckResult.CONTINUE
 
-    if state.sending.task.exception() is not None:
-        # let cleanup be handled in cleanup_open, which will discover
-        # the error again, so avoid having it repeated in the stack trace
-        raise PubSubError("send failed")
+    try:
+        state.sending.task.result()
+    except BaseException as exc:
+        raise PubSubError("send failed") from exc
 
     if state.sending.type == SendingState.INTERNAL_MESSAGE:
         sweep_internal_message(state.sending.internal_message)

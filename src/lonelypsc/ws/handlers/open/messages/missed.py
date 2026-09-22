@@ -1,9 +1,9 @@
-import asyncio
 import time
 from typing import TYPE_CHECKING
 
 from lonelypsp.stateful.messages.missed import B2S_Missed
 
+from lonelypsc.util.task import create_task
 from lonelypsc.ws.handlers.open.messages.protocol import MessageChecker
 from lonelypsc.ws.handlers.open.websocket_url import (
     make_for_receive_websocket_url_and_change_counter,
@@ -24,7 +24,7 @@ def check_missed(state: StateOpen, message: B2S_Missed) -> None:
     state.receiving = ReceivingAuthorizingMissed(
         type=ReceivingState.AUTHORIZING_MISSED,
         message=message,
-        authorization_task=asyncio.create_task(
+        authorization_task=create_task(
             state.config.is_missed_allowed(
                 tracing=message.tracing,
                 recovery=make_for_receive_websocket_url_and_change_counter(state),

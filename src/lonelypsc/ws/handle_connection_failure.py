@@ -8,6 +8,7 @@ import aiohttp
 
 from lonelypsc.config.ws_config import WebsocketPubSubConfig
 from lonelypsc.util.errors import combine_multiple_exceptions
+from lonelypsc.util.task import TaskHandle, create_task
 from lonelypsc.ws.internal_callbacks import finalize_internal_callback
 from lonelypsc.ws.state import (
     InternalMessageStateDroppedSent,
@@ -36,7 +37,7 @@ async def handle_connection_failure(
     retry: RetryInformation,
     tasks: TasksOnceOpen,
     exception: BaseException,
-    backgrounded: Set[asyncio.Task[Any]],
+    backgrounded: Set[TaskHandle[Any]],
 ) -> State:
     """Handles a connection failure by either moving to the next broadcaster,
     moving to WAITING_RETRY, or moving to CLOSED.
@@ -55,7 +56,7 @@ async def handle_connection_failure(
             can be reached or canceled if moving to closed
         exception (BaseException): the exception that caused the connection failure;
             will be included somewhere in the error if no retries are possible
-        backgrounded (Set[asyncio.Task[Any]]): the set of backgrounded tasks that
+        backgrounded (Set[TaskHandle[Any]]): the set of backgrounded tasks that
             if they fail it must be treated as irrecoverable, but whose result otherwise
             is unimportant. these are assumed to be like notification callbacks in the
             sense that they don't need cancellation and should be called even after an
@@ -76,18 +77,24 @@ async def handle_connection_failure(
         return StateClosed(type=StateType.CLOSED)
 
     new_backgrounded = set()
+    errors = []
     for bknd in backgrounded:
         if not bknd.done():
             new_backgrounded.add(bknd)
             continue
 
-        if bknd.exception() is not None:
-            await cleanup_tasks_and_raise(
-                tasks,
-                backgrounded,
-                "backgrounded sweep failed",
-                Exception("backgrounded task failed"),
-            )
+        try:
+            bknd.result()
+        except BaseException as exc:
+            errors.append(exc)
+
+    if errors:
+        await cleanup_tasks_and_raise(
+            tasks,
+            new_backgrounded,
+            "backgrounded sweep failed",
+            Exception("backgrounded task failed"),
+        )
 
     try:
         next_broadcaster = next(retry.iterator)
@@ -128,14 +135,14 @@ async def handle_connection_failure(
 
 
 async def cleanup_tasks_and_return_errors(
-    tasks: TasksOnceOpen, backgrounded: Set[asyncio.Task[Any]]
+    tasks: TasksOnceOpen, backgrounded: Set[TaskHandle[Any]]
 ) -> List[BaseException]:
     """Cleans up the given tasks, returning any errors that occurred"""
     cleanup_excs: List[BaseException] = []
     while tasks.resending_notifications:
         notif = tasks.resending_notifications.pop()
         backgrounded.add(
-            asyncio.create_task(
+            create_task(
                 finalize_internal_callback(
                     notif.callback,
                     InternalMessageStateDroppedSent(
@@ -147,7 +154,7 @@ async def cleanup_tasks_and_return_errors(
 
     for notif in tasks.unsent_notifications.drain():
         backgrounded.add(
-            asyncio.create_task(
+            create_task(
                 finalize_internal_callback(
                     notif.callback,
                     InternalMessageStateDroppedUnsent(
@@ -158,8 +165,10 @@ async def cleanup_tasks_and_return_errors(
         )
 
     for bknd in backgrounded:
+        if bknd.consumed:
+            continue
         try:
-            await bknd
+            await bknd.wait()
         except BaseException as e:
             cleanup_excs.append(e)
 
@@ -167,7 +176,7 @@ async def cleanup_tasks_and_return_errors(
 
 
 async def cleanup_tasks_and_raise_on_error(
-    tasks: TasksOnceOpen, backgrounded: Set[asyncio.Task[Any]], message: str
+    tasks: TasksOnceOpen, backgrounded: Set[TaskHandle[Any]], message: str
 ) -> None:
     """Cleans up the given tasks and raises an exception if any errors occurred"""
     cleanup_excs = await cleanup_tasks_and_return_errors(tasks, backgrounded)
@@ -178,7 +187,7 @@ async def cleanup_tasks_and_raise_on_error(
 
 async def cleanup_tasks_and_raise(
     tasks: TasksOnceOpen,
-    backgrounded: Set[asyncio.Task[Any]],
+    backgrounded: Set[TaskHandle[Any]],
     message: str,
     cause: BaseException,
 ) -> Never:

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import aiohttp
 
 from lonelypsc.client import PubSubCancelRequested, PubSubIrrecoverableError
+from lonelypsc.util.task import create_task
 from lonelypsc.ws.check_result import (
     CheckResult,
     CheckStateChangerResult,
@@ -55,23 +56,25 @@ async def _core(state: StateWaitingRetry) -> State:
 
 async def _wait_something_changed(state: StateWaitingRetry) -> None:
     """Waits for something to need to be done about the given state"""
-    wait_cancel = asyncio.create_task(state.cancel_requested.wait())
-    wait_timeout = asyncio.create_task(asyncio.sleep(state.retry_at - time.time()))
-    await asyncio.wait(
-        [
-            wait_cancel,
-            wait_timeout,
-            *state.backgrounded,
-            *[
-                msg.callback.task
-                for msg in state.tasks.resending_notifications
-                if msg.callback.task is not None
+    async with (
+        create_task(state.cancel_requested.wait()) as wait_cancel,
+        create_task(asyncio.sleep(state.retry_at - time.time())) as wait_timeout,
+    ):
+        await asyncio.wait(
+            [
+                wait_cancel.task,
+                wait_timeout.task,
+                *(task.task for task in state.backgrounded),
+                *[
+                    msg.callback.task.task
+                    for msg in state.tasks.resending_notifications
+                    if msg.callback.task is not None
+                ],
             ],
-        ],
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    wait_cancel.cancel()
-    wait_timeout.cancel()
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        await wait_cancel.cancel_and_check()
+        await wait_timeout.cancel_and_check()
 
 
 async def _check_canceled(state: StateWaitingRetry) -> CheckStateChangerResult:
@@ -84,16 +87,21 @@ async def _check_canceled(state: StateWaitingRetry) -> CheckStateChangerResult:
 def _sweep_backgrounded(state: StateWaitingRetry) -> None:
     """Cleans out done background tasks, raising an irrecoverable error if any failed"""
     new_backgrounded = set()
+    errors = []
 
     for bknd in state.backgrounded:
         if not bknd.done():
             new_backgrounded.add(bknd)
             continue
 
-        if bknd.exception() is not None:
-            raise PubSubIrrecoverableError("background task failed")
+        try:
+            bknd.result()
+        except BaseException as exc:
+            errors.append(exc)
 
     state.backgrounded = new_backgrounded
+    if errors:
+        raise PubSubIrrecoverableError("background task failed") from errors[0]
 
 
 def _sweep_resending(state: StateWaitingRetry) -> None:
