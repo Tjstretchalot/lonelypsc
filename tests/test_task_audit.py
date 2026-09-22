@@ -1,7 +1,6 @@
 import ast
 from pathlib import Path
 
-
 SOURCE_ROOT = Path(__file__).parents[1] / "src" / "lonelypsc"
 
 

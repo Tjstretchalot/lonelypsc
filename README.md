@@ -79,6 +79,8 @@ def _build_config() -> HttpPubSubConfig:
         # responses by default, plus network errors if outgoing_retry_network_errors
         # is True.
         outgoing_retries_per_broadcaster=2,
+        # how often, in seconds, to check and repair broadcaster subscriptions
+        resubscribe_interval=30,
         # if receiving a message thats larger than this in bytes, it will be spooled to disk
         message_body_spool_size=1024 * 1024 * 10,
         # total timeout for a request to a broadcaster in seconds

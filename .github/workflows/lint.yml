@@ -21,10 +21,14 @@ jobs:
           enable-cache: true
       - name: Install dependencies
         run: uv sync --locked --all-extras
+      - name: Shellcheck maintenance scripts
+        run: shellcheck fix.sh analyse.sh
       - name: Lint lonelypsc with black
-        run: uv run black --check src/lonelypsc
+        run: uv run black --check src/lonelypsc tests
       - name: Type check lonelypsc with mypy
         working-directory: src
-        run: uv run --project .. mypy lonelypsc --explicit-package-bases --disallow-untyped-defs
+        run: uv run --project .. mypy lonelypsc ../tests --explicit-package-bases --disallow-untyped-defs
       - name: Lint lonelypsc with ruff
-        run: uv run ruff check --output-format=github src
+        run: uv run ruff check --output-format=github src tests
+      - name: Test lonelypsc
+        run: uv run pytest -q
