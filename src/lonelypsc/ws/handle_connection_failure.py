@@ -36,7 +36,7 @@ async def handle_connection_failure(
     retry: RetryInformation,
     tasks: TasksOnceOpen,
     exception: BaseException,
-    backgrounded: Set[asyncio.Task[Any]]
+    backgrounded: Set[asyncio.Task[Any]],
 ) -> State:
     """Handles a connection failure by either moving to the next broadcaster,
     moving to WAITING_RETRY, or moving to CLOSED.
