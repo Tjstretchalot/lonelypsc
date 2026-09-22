@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import io
+import math
 import random
 import tempfile
 import time
@@ -101,8 +102,21 @@ class HttpPubSubClientConnector(Generic[InitializerT]):
         self._shuffler: Optional[BroadcastersShuffler] = None
         """The shuffler for the broadcasters list, if entered, otherwise None"""
 
+        self._resubscribe_task: Optional[TaskHandle[None]] = None
+        """The task that periodically repairs broadcaster subscriptions"""
+
+        self._subscription_lock = asyncio.Lock()
+        """Serializes subscription changes with subscription reconciliation"""
+
+        self._desired_exact: Set[bytes] = set()
+        """The exact subscriptions we expect broadcasters to have"""
+
+        self._desired_globs: Set[str] = set()
+        """The glob subscriptions we expect broadcasters to have"""
+
     async def setup_connector(self) -> None:
         assert self._session is None, "already set up"
+        assert self._resubscribe_task is None, "already set up"
         sess = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(
                 total=self.config.outgoing_http_timeout_total,
@@ -117,13 +131,61 @@ class HttpPubSubClientConnector(Generic[InitializerT]):
         self._session = sess
         self._shuffler = BroadcastersShuffler(self.config.broadcasters)
 
+        resubscribe_interval = self.config.resubscribe_interval
+        if not math.isfinite(resubscribe_interval) or resubscribe_interval <= 0:
+            await sess.__aexit__(None, None, None)
+            self._session = None
+            self._shuffler = None
+            raise ValueError(
+                "resubscribe_interval must be finite and greater than zero"
+            )
+
+        self._resubscribe_task = create_task(self._resubscribe_loop())
+
     async def teardown_connector(self) -> None:
         assert self._session is not None, "not set up"
+        resubscribe_task = self._resubscribe_task
+        self._resubscribe_task = None
+        if resubscribe_task is not None:
+            await resubscribe_task.cancel_and_check()
+
         sess = self._session
         self._session = None
         self._shuffler = None
+        self._desired_exact.clear()
+        self._desired_globs.clear()
         await sess.__aexit__(None, None, None)
         return None
+
+    async def _resubscribe_loop(self) -> None:
+        resubscribe_interval = self.config.resubscribe_interval
+        while True:
+            await asyncio.sleep(resubscribe_interval)
+            try:
+                await self._check_and_resubscribe()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A later interval will retry transient network, authorization, or
+                # broadcaster failures. The desired state is intentionally retained.
+                continue
+
+    async def _check_and_resubscribe(self) -> None:
+        async with self._subscription_lock:
+            if not self._desired_exact and not self._desired_globs:
+                return
+
+            exact = sorted(self._desired_exact)
+            globs = sorted(self._desired_globs)
+            expected = make_strong_etag(
+                self._receive_url,
+                [TopicAndRecovery(topic, self._recovery_url) for topic in exact],
+                [GlobAndRecovery(glob, self._recovery_url) for glob in globs],
+                recheck_sort=False,
+            )
+            actual = await self._check_subscriptions()
+            if actual != expected:
+                await self._set_subscriptions(exact=exact, globs=globs)
 
     async def _try_large_post_request(
         self,
@@ -336,6 +398,10 @@ class HttpPubSubClientConnector(Generic[InitializerT]):
             raise PubSubRequestRefusedError()
 
     async def subscribe_exact(self, /, *, topic: bytes) -> None:
+        async with self._subscription_lock:
+            await self._subscribe_exact(topic=topic)
+
+    async def _subscribe_exact(self, /, *, topic: bytes) -> None:
         assert self._session is not None, "not set up"
         receive_url = self._receive_url
         recovery_url = self._recovery_url
@@ -378,9 +444,14 @@ class HttpPubSubClientConnector(Generic[InitializerT]):
             },  # TODO: treat as failure (auth is being skipped) and update docs
         )
         self._raise_for_error(result)
+        self._desired_exact.add(topic)
         # TODO: check response auth
 
     async def subscribe_glob(self, /, *, glob: str) -> None:
+        async with self._subscription_lock:
+            await self._subscribe_glob(glob=glob)
+
+    async def _subscribe_glob(self, /, *, glob: str) -> None:
         assert self._session is not None, "not set up"
         receive_url = self._receive_url
         recovery_url = self._recovery_url
@@ -422,9 +493,14 @@ class HttpPubSubClientConnector(Generic[InitializerT]):
             special_ok_codes={409},  # TODO: treat as failure and update docs
         )
         self._raise_for_error(result)
+        self._desired_globs.add(glob)
         # TODO: check response auth
 
     async def unsubscribe_exact(self, /, *, topic: bytes) -> None:
+        async with self._subscription_lock:
+            await self._unsubscribe_exact(topic=topic)
+
+    async def _unsubscribe_exact(self, /, *, topic: bytes) -> None:
         assert self._session is not None, "not set up"
         receive_url = self._receive_url
 
@@ -457,10 +533,15 @@ class HttpPubSubClientConnector(Generic[InitializerT]):
             special_ok_codes={409},  # TODO: treat as failure and update docs
         )
         self._raise_for_error(result)
+        self._desired_exact.discard(topic)
 
         # TODO: check response auth
 
     async def unsubscribe_glob(self, /, *, glob: str) -> None:
+        async with self._subscription_lock:
+            await self._unsubscribe_glob(glob=glob)
+
+    async def _unsubscribe_glob(self, /, *, glob: str) -> None:
         assert self._session is not None, "not set up"
         receive_url = self._receive_url
 
@@ -494,12 +575,17 @@ class HttpPubSubClientConnector(Generic[InitializerT]):
             special_ok_codes={409},  # TODO: treat as failure and update docs
         )
         self._raise_for_error(result)
+        self._desired_globs.discard(glob)
         # TODO: check response auth
 
     def get_bulk(self) -> Optional[PubSubClientBulkSubscriptionConnector]:
         return self
 
     async def check_subscriptions(self) -> StrongEtag:
+        async with self._subscription_lock:
+            return await self._check_subscriptions()
+
+    async def _check_subscriptions(self) -> StrongEtag:
         assert self._session is not None, "not set up"
         receive_url = self._receive_url
 
@@ -579,6 +665,18 @@ class HttpPubSubClientConnector(Generic[InitializerT]):
         return strong_etag
 
     async def set_subscriptions(
+        self,
+        /,
+        *,
+        exact: List[bytes],
+        globs: List[str],
+    ) -> None:
+        async with self._subscription_lock:
+            await self._set_subscriptions(exact=exact, globs=globs)
+            self._desired_exact = set(exact)
+            self._desired_globs = set(globs)
+
+    async def _set_subscriptions(
         self,
         /,
         *,

@@ -1,3 +1,4 @@
+import math
 from typing import (
     TYPE_CHECKING,
     Generic,
@@ -28,6 +29,9 @@ from lonelypsp.tracing.stateless.root import (
 )
 
 from lonelypsc.config.config import PubSubBroadcasterConfig
+
+DEFAULT_RESUBSCRIBE_INTERVAL = 300.0
+"""The default interval, in seconds, for HTTP subscription reconciliation."""
 
 
 class HttpPubSubBindUvicornConfig(TypedDict):
@@ -163,6 +167,10 @@ class HttpPubSubGenericConfig(Protocol):
     """Generic network configuration."""
 
     @property
+    def resubscribe_interval(self) -> float:
+        """How often, in seconds, to check and repair broadcaster subscriptions."""
+
+    @property
     def message_body_spool_size(self) -> int:
         """If the message body exceeds this size we always switch to a temporary file."""
 
@@ -219,7 +227,14 @@ class HttpPubSubGenericConfigFromParts:
         outgoing_http_timeout_sock_read: Optional[float],
         outgoing_http_timeout_sock_connect: Optional[float],
         outgoing_retry_ambiguous: bool,
+        resubscribe_interval: float = DEFAULT_RESUBSCRIBE_INTERVAL,
     ):
+        if not math.isfinite(resubscribe_interval) or resubscribe_interval <= 0:
+            raise ValueError(
+                "resubscribe_interval must be finite and greater than zero"
+            )
+
+        self.resubscribe_interval = resubscribe_interval
         self.message_body_spool_size = message_body_spool_size
         self.outgoing_http_timeout_total = outgoing_http_timeout_total
         self.outgoing_http_timeout_connect = outgoing_http_timeout_connect
@@ -292,6 +307,10 @@ class HttpPubSubConfigFromParts(Generic[InitializerT]):
     @property
     def outgoing_retries_per_broadcaster(self) -> int:
         return self.connect_config.outgoing_retries_per_broadcaster
+
+    @property
+    def resubscribe_interval(self) -> float:
+        return self.generic_config.resubscribe_interval
 
     @property
     def message_body_spool_size(self) -> int:
@@ -931,6 +950,7 @@ def make_http_pub_sub_config(
     outgoing_retry_ambiguous: bool,
     auth: AuthConfig,
     tracing: StatelessTracingSubscriberRoot[InitializerT],
+    resubscribe_interval: float = DEFAULT_RESUBSCRIBE_INTERVAL,
 ) -> HttpPubSubConfig[InitializerT]:
     """Convenience function to make a HttpPubSubConfig object without excessive nesting
     if you are specifying everything that doesn't need to be synced with the broadcaster
@@ -949,6 +969,7 @@ def make_http_pub_sub_config(
             outgoing_http_timeout_sock_read=outgoing_http_timeout_sock_read,
             outgoing_http_timeout_sock_connect=outgoing_http_timeout_sock_connect,
             outgoing_retry_ambiguous=outgoing_retry_ambiguous,
+            resubscribe_interval=resubscribe_interval,
         ),
         auth_config=auth,
         tracing=tracing,
